@@ -1,0 +1,156 @@
+{
+  "general": {
+    "risk_percent": 0.5,
+    "default_rr_ratio": 2.5,
+    "order_timeout_candles": 4,
+    "candle_timeframe_minutes": 240,
+    "timezone": "Europe/Paris"
+  },
+  
+  "webhook": {
+    "host": "0.0.0.0",
+    "port": 5000,
+    "secret_token": "CHANGE_ME_RANDOM_TOKEN_12345",
+    "allowed_ips": []
+  },
+  
+  "brokers": {
+    "ftmo_ctrader": {
+      "enabled": true,
+      "type": "ctrader",
+      "name": "FTMO cTrader",
+      "is_demo": true,
+      "client_id": "",
+      "client_secret": "",
+      "access_token": "",
+      "account_id": null,
+      "instruments_mapping": {
+        "EURUSD": 1,
+        "GBPUSD": 2,
+        "USDJPY": 3,
+        "XAUUSD": 41,
+        "NAS100": 22426,
+        "US30": 22424,
+        "SPX500": 22425,
+        "GER40": 22419,
+        "BTCUSD": 22890
+      }
+    },
+    
+    "gft_tradelocker": {
+      "enabled": true,
+      "type": "tradelocker",
+      "name": "Goat Funded Trader",
+      "is_demo": true,
+      "email": "",
+      "password": "",
+      "server": "GFTTL",
+      "instruments_mapping": {
+        "EURUSD": "EURUSD.X",
+        "GBPUSD": "GBPUSD.X",
+        "USDJPY": "USDJPY.X",
+        "XAUUSD": "XAUUSD.X",
+        "NAS100": "NAS100.X",
+        "US30": "US30.X",
+        "SPX500": "SPX500.X",
+        "GER40": "GER40.X",
+        "BTCUSD": "BTCUSD.X"
+      }
+    }
+  },
+  
+  "instruments": {
+    "EURUSD": {
+      "pip_value": 0.0001,
+      "lot_size": 100000,
+      "min_lot": 0.01,
+      "max_lot": 100,
+      "session_model": "24x5",
+      "candle_phase_minutes": -120
+    },
+    "GBPUSD": {
+      "pip_value": 0.0001,
+      "lot_size": 100000,
+      "min_lot": 0.01,
+      "max_lot": 100,
+      "session_model": "24x5",
+      "candle_phase_minutes": -120
+    },
+    "USDJPY": {
+      "pip_value": 0.01,
+      "lot_size": 100000,
+      "min_lot": 0.01,
+      "max_lot": 100,
+      "session_model": "24x5",
+      "candle_phase_minutes": -120
+    },
+    "XAUUSD": {
+      "pip_value": 0.01,
+      "lot_size": 100,
+      "min_lot": 0.01,
+      "max_lot": 50,
+      "session_model": "24x5",
+      "candle_phase_minutes": -120
+    },
+    "NAS100": {
+      "pip_value": 0.01,
+      "lot_size": 1,
+      "min_lot": 0.1,
+      "max_lot": 100,
+      "session_model": "24x5",
+      "candle_phase_minutes": -120
+    },
+    "US30": {
+      "pip_value": 0.01,
+      "lot_size": 1,
+      "min_lot": 0.1,
+      "max_lot": 100,
+      "session_model": "24x5",
+      "candle_phase_minutes": -120
+    },
+    "BTCUSD": {
+      "pip_value": 0.01,
+      "lot_size": 1,
+      "min_lot": 0.01,
+      "max_lot": 10,
+      "session_model": "24x7",
+      "candle_phase_minutes": 0
+    }
+  },
+  
+  "notifications": {
+    "enabled": true,
+    "on_order_placed": true,
+    "on_order_expired": true,
+    "on_error": true,
+    "channels": [
+      {
+        "type": "email",
+        "enabled": false,
+        "config": {
+          "smtp_host": "smtp.example.com",
+          "smtp_port": 587,
+          "username": "",
+          "password": "",
+          "from": "trading@example.com",
+          "to": "alerts@example.com"
+        }
+      },
+      {
+        "type": "telegram",
+        "enabled": false,
+        "config": {
+          "bot_token": "",
+          "chat_id": ""
+        }
+      },
+      {
+        "type": "discord",
+        "enabled": false,
+        "config": {
+          "webhook_url": ""
+        }
+      }
+    ]
+  }
+}

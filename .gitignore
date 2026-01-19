@@ -1,12 +1,18 @@
-# Byte-compiled / optimized / DLL files
+# ===== CREDENTIALS & SECRETS =====
+# IMPORTANT: Ne jamais commiter les fichiers avec tokens/credentials
+config/settings.json
+.env
+.env.*
+*.secret
+.secrets*
+tokens.json
+credentials.json
+
+# ===== Python =====
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
 .Python
 build/
 develop-eggs/
@@ -24,15 +30,15 @@ wheels/
 .installed.cfg
 *.egg
 
-# PyInstaller
-*.manifest
-*.spec
+# ===== Virtual environments =====
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
+# ===== Tests & Coverage =====
 htmlcov/
 .tox/
 .nox/
@@ -46,58 +52,34 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
-# Environments
-.env
-.env.secret
-.env.local
-.secrets
-.secrets*
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Keys and tokens (safety)
-*.key
-*.pem
-*.p12
-tokens.json
-credentials.json
-
-# IDEs
+# ===== IDEs =====
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# mypy
+# ===== Type checking =====
 .mypy_cache/
 .dmypy.json
 dmypy.json
-
-# ruff
 .ruff_cache/
 
-# Output
-out/
-*.csv
-*.json
-
-# OS
+# ===== OS =====
 .DS_Store
 Thumbs.db
 
-# Codebase
-codebase.*
+# ===== Logs =====
+*.log
+logs/
 
-# Backups de patch
+# ===== Keys and certificates =====
+*.key
+*.pem
+*.p12
+*.crt
+
+# ===== Backups =====
 *.bak
 *.orig
 *.backup
-
-# Scripts de patch temporaires
-apply_patch.sh
-patch_*.txt
