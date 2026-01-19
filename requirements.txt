@@ -1,0 +1,28 @@
+# Web server
+flask>=3.0.0
+gunicorn>=21.0.0
+
+# cTrader Open API
+ctrader-open-api>=0.11.0
+twisted>=23.0.0
+
+# HTTP requests (TradeLocker)
+requests>=2.31.0
+
+# Async support
+asyncio-twisted>=0.0.3
+
+# Configuration & Utils
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Scheduling (for order cleanup)
+schedule>=1.2.0
+
+# Notifications
+apprise>=1.6.0  # Multi-platform notifications (email, telegram, discord, etc.)
+
+# CLI
+click>=8.1.0
+rich>=13.0.0  # Pretty CLI output

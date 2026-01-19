@@ -1,0 +1,209 @@
+//@version=6
+indicator("Envolées — Donchian breakout (Webhook JSON) [alerts]", overlay=true)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inputs (alignés config Python)
+// ─────────────────────────────────────────────────────────────────────────────
+donchianPeriod  = input.int(20,  "Donchian N", minval=5, maxval=200)
+emaPeriod       = input.int(200, "EMA period", minval=20, maxval=500)
+atrPeriod       = input.int(14,  "ATR period", minval=5, maxval=100)
+
+bufferAtr       = input.float(0.10, "Buffer ATR (signal)", minval=0.0, maxval=2.0, step=0.01)
+penaltyAtr      = input.float(0.0, "Pénalité exécution (ATR au signal)", minval=0.0, maxval=2.0, step=0.05)
+
+slAtr           = input.float(1.00, "SL = SL_ATR × ATR(signal)", minval=0.1, maxval=10.0, step=0.05)
+tpR             = input.float(1.00, "TP = TP_R × risk", minval=0.1, maxval=10.0, step=0.05)
+
+orderValidBars  = input.int(1, "Validité ordre (barres)", minval=1, maxval=10)
+
+// Filtre volatilité (ATR relatif sous un quantile glissant)
+volWindowBars   = input.int(1000, "VOL window (barres)", minval=50, maxval=5000)
+volQuantile     = input.float(0.90, "VOL quantile", minval=0.50, maxval=0.99, step=0.01)
+
+// Fenêtre sans trading (Europe/Paris)
+noTradeStartH   = input.int(22, "No-trade start (h)", minval=0, maxval=23)
+noTradeStartM   = input.int(30, "No-trade start (m)", minval=0, maxval=59)
+noTradeEndH     = input.int(6,  "No-trade end (h)",   minval=0, maxval=23)
+noTradeEndM     = input.int(30, "No-trade end (m)",   minval=0, maxval=59)
+
+// Visuels
+showDonchian    = input.bool(true, "Afficher Donchian")
+showLevels      = input.bool(true, "Afficher niveaux entry/SL/TP au signal")
+showSignals     = input.bool(true, "Afficher signaux")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Indicateurs
+// ─────────────────────────────────────────────────────────────────────────────
+ema = ta.ema(close, emaPeriod)
+atr = ta.atr(atrPeriod)
+
+// Donchian shift=1 : équivalent au rolling().max().shift(1) Python
+dHigh = ta.highest(high, donchianPeriod)[1]
+dLow  = ta.lowest(low,  donchianPeriod)[1]
+
+// Filtre volatilité : ATR_rel <= quantile glissant
+atrRel  = atr / close
+atrRelQ = ta.percentile_linear_interpolation(atrRel, volWindowBars, volQuantile * 100.0)
+volOk   = not na(atrRelQ) and (atrRel <= atrRelQ)
+
+// Fenêtre sans trading (Europe/Paris) — décision à la clôture
+hParis = hour(time_close, "Europe/Paris")
+mParis = minute(time_close, "Europe/Paris")
+startMin = noTradeStartH * 60 + noTradeStartM
+endMin   = noTradeEndH   * 60 + noTradeEndM
+nowMin   = hParis * 60 + mParis
+
+bool inNoTrade = false
+if startMin <= endMin
+    inNoTrade := (nowMin >= startMin and nowMin < endMin)
+else
+    inNoTrade := (nowMin >= startMin or nowMin < endMin)
+
+// Indicateurs prêts
+ready = not na(atr) and not na(dHigh) and not na(dLow) and not na(atrRelQ) and not na(ema)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Signal (strictement comme DonchianBreakoutStrategy.generate_signal)
+// Verrouillage : clôture uniquement (évite toute ambiguïté intrabar)
+// ─────────────────────────────────────────────────────────────────────────────
+buffer = bufferAtr * atr
+
+longSignal  = barstate.isconfirmed and ready and volOk and not inNoTrade and close > ema and close > (dHigh + buffer)
+shortSignal = barstate.isconfirmed and ready and volOk and not inNoTrade and close < ema and close < (dLow  - buffer)
+
+// entry_level (Python) puis entry pénalisée (ATR au signal)
+longEntryLevel  = dHigh + buffer
+shortEntryLevel = dLow  - buffer
+
+longEntry  = longEntryLevel  + penaltyAtr * atr
+shortEntry = shortEntryLevel - penaltyAtr * atr
+
+longSL  = longEntry  - slAtr * atr
+shortSL = shortEntry + slAtr * atr
+
+longRisk  = longEntry - longSL
+shortRisk = shortSL   - shortEntry
+
+longTP  = longEntry  + tpR * longRisk
+shortTP = shortEntry - tpR * shortRisk
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Déterminer le type d'ordre (LIMIT ou STOP)
+// LONG : si entry > close actuel → STOP (achat au-dessus), sinon → LIMIT
+// SHORT : si entry < close actuel → STOP (vente en-dessous), sinon → LIMIT
+// ─────────────────────────────────────────────────────────────────────────────
+longOrderType  = longEntry > close ? "STOP" : "LIMIT"
+shortOrderType = shortEntry < close ? "STOP" : "LIMIT"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Normaliser le symbole pour le webhook (enlever suffixes courtier)
+// ─────────────────────────────────────────────────────────────────────────────
+// Fonction pour nettoyer le symbole
+cleanSymbol(sym) =>
+    // Enlever les suffixes courants (.X, .STP, etc.)
+    result = sym
+    if str.endswith(result, ".X")
+        result := str.replace(result, ".X", "")
+    if str.endswith(result, ".STP")
+        result := str.replace(result, ".STP", "")
+    result
+
+normalizedSymbol = cleanSymbol(syminfo.ticker)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Visuels
+// ─────────────────────────────────────────────────────────────────────────────
+plot(showDonchian ? dHigh : na, "Donchian High (shift=1)", color=color.new(color.green, 70))
+plot(showDonchian ? dLow  : na, "Donchian Low (shift=1)",  color=color.new(color.red,   70))
+plot(ema, "EMA", color=color.new(color.gray, 0))
+
+plotshape(showSignals and longSignal,  title="Long signal",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.tiny, text="L")
+plotshape(showSignals and shortSignal, title="Short signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red,   0), size=size.tiny, text="S")
+
+if showLevels and longSignal
+    line.new(bar_index, longEntry, bar_index + orderValidBars, longEntry, extend=extend.none, color=color.new(color.green, 0), width=1)
+    line.new(bar_index, longSL,    bar_index + orderValidBars, longSL,    extend=extend.none, color=color.new(color.red,   0), width=1)
+    line.new(bar_index, longTP,    bar_index + orderValidBars, longTP,    extend=extend.none, color=color.new(color.blue,  0), width=1)
+
+if showLevels and shortSignal
+    line.new(bar_index, shortEntry, bar_index + orderValidBars, shortEntry, extend=extend.none, color=color.new(color.red,   0), width=1)
+    line.new(bar_index, shortSL,    bar_index + orderValidBars, shortSL,    extend=extend.none, color=color.new(color.red,   0), width=1)
+    line.new(bar_index, shortTP,    bar_index + orderValidBars, shortTP,    extend=extend.none, color=color.new(color.blue,  0), width=1)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTES JSON POUR WEBHOOK
+// Format attendu par le serveur Python
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Alerte LONG avec message JSON
+if longSignal
+    jsonMsg = '{"symbol":"' + normalizedSymbol + '","side":"LONG","order_type":"' + longOrderType + '","entry":' + str.tostring(longEntry, format.mintick) + ',"sl":' + str.tostring(longSL, format.mintick) + ',"tp":' + str.tostring(longTP, format.mintick) + ',"validity_bars":' + str.tostring(orderValidBars) + ',"atr":' + str.tostring(atr, format.mintick) + ',"timeframe":"' + timeframe.period + '"}'
+    alert(jsonMsg, alert.freq_once_per_bar_close)
+
+// Alerte SHORT avec message JSON
+if shortSignal
+    jsonMsg = '{"symbol":"' + normalizedSymbol + '","side":"SHORT","order_type":"' + shortOrderType + '","entry":' + str.tostring(shortEntry, format.mintick) + ',"sl":' + str.tostring(shortSL, format.mintick) + ',"tp":' + str.tostring(shortTP, format.mintick) + ',"validity_bars":' + str.tostring(orderValidBars) + ',"atr":' + str.tostring(atr, format.mintick) + ',"timeframe":"' + timeframe.period + '"}'
+    alert(jsonMsg, alert.freq_once_per_bar_close)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ALERTCONDITION (pour messages personnalisables avec placeholders)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Plots cachés pour les placeholders {{plot_X}}
+var float a_entry = na
+var float a_sl    = na
+var float a_tp    = na
+var float a_atr   = na
+
+if longSignal
+    a_entry := longEntry
+    a_sl    := longSL
+    a_tp    := longTP
+    a_atr   := atr
+else if shortSignal
+    a_entry := shortEntry
+    a_sl    := shortSL
+    a_tp    := shortTP
+    a_atr   := atr
+else
+    a_entry := na
+    a_sl    := na
+    a_tp    := na
+    a_atr   := na
+
+plot(a_entry, "Entry", display=display.none)
+plot(a_sl,    "SL",    display=display.none)
+plot(a_tp,    "TP",    display=display.none)
+plot(a_atr,   "ATR",   display=display.none)
+plot(orderValidBars, "ValidBars", display=display.none)
+
+alertcondition(longSignal,
+  title="Envolées LONG (JSON)",
+  message='{"symbol":"{{ticker}}","side":"LONG","entry":{{plot_0}},"sl":{{plot_1}},"tp":{{plot_2}},"validity_bars":{{plot_4}},"atr":{{plot_3}},"timeframe":"{{interval}}"}')
+
+alertcondition(shortSignal,
+  title="Envolées SHORT (JSON)",
+  message='{"symbol":"{{ticker}}","side":"SHORT","entry":{{plot_0}},"sl":{{plot_1}},"tp":{{plot_2}},"validity_bars":{{plot_4}},"atr":{{plot_3}},"timeframe":"{{interval}}"}')
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TABLEAU DE STATUT
+// ═════════════════════════════════════════════════════════════════════════════
+var table statusTable = table.new(position.top_right, 2, 5, 
+  bgcolor=color.new(color.black, 85), 
+  border_width=1)
+
+if barstate.islast
+    table.cell(statusTable, 0, 0, "Paramètre", text_color=color.white, text_size=size.small, bgcolor=color.new(color.gray, 50))
+    table.cell(statusTable, 1, 0, "Valeur", text_color=color.white, text_size=size.small, bgcolor=color.new(color.gray, 50))
+    
+    table.cell(statusTable, 0, 1, "Donchian", text_color=color.white, text_size=size.small)
+    table.cell(statusTable, 1, 1, str.tostring(donchianPeriod), text_color=color.green, text_size=size.small)
+    
+    table.cell(statusTable, 0, 2, "SL ATR", text_color=color.white, text_size=size.small)
+    table.cell(statusTable, 1, 2, str.tostring(slAtr, "#.##"), text_color=color.green, text_size=size.small)
+    
+    table.cell(statusTable, 0, 3, "TP R:R", text_color=color.white, text_size=size.small)
+    table.cell(statusTable, 1, 3, str.tostring(tpR, "#.##"), text_color=color.green, text_size=size.small)
+    
+    table.cell(statusTable, 0, 4, "Validité", text_color=color.white, text_size=size.small)
+    table.cell(statusTable, 1, 4, str.tostring(orderValidBars) + " bar(s)", text_color=color.green, text_size=size.small)
