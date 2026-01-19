@@ -72,6 +72,18 @@ class CTraderBroker(BaseBroker):
         # Thread management for Twisted reactor
         self._reactor_thread: Optional[threading.Thread] = None
         self._reactor_running = False
+        self._token_refreshed = False  # Éviter de refresh plusieurs fois par session
+    
+    def _should_refresh_token(self) -> bool:
+        """Check if we should refresh the token"""
+        if not self.refresh_token:
+            return False
+        if not self.config.get("auto_refresh_token", True):
+            return False
+        if self._token_refreshed:
+            # Déjà refreshé dans cette session
+            return False
+        return True
     
     def _ensure_reactor_running(self):
         """Ensure Twisted reactor is running in a background thread"""
@@ -89,10 +101,18 @@ class CTraderBroker(BaseBroker):
         time.sleep(0.5)  # Give reactor time to start
     
     def _refresh_access_token(self) -> bool:
-        """Refresh the access token using the refresh token"""
+        """Refresh the access token using the refresh token.
+        
+        cTrader refresh tokens are single-use. After refresh, both the new
+        access_token and new refresh_token are saved to the config file.
+        """
         if not self.refresh_token:
             print("[cTrader] ⚠️  No refresh token available")
             return False
+        
+        # Garder les anciens tokens au cas où le refresh échoue
+        old_access_token = self.access_token
+        old_refresh_token = self.refresh_token
         
         token_url = "https://openapi.ctrader.com/apps/token"
         
@@ -109,22 +129,81 @@ class CTraderBroker(BaseBroker):
             
             if response.status_code == 200:
                 data = response.json()
-                self.access_token = data.get("accessToken") or data.get("access_token")
+                
+                if not data:
+                    print("[cTrader] ❌ Empty response from token endpoint")
+                    return False
+                
+                new_access = data.get("accessToken") or data.get("access_token")
                 new_refresh = data.get("refreshToken") or data.get("refresh_token")
+                
+                if not new_access:
+                    print("[cTrader] ❌ No access token in response")
+                    return False
+                
+                self.access_token = new_access
                 if new_refresh:
                     self.refresh_token = new_refresh
                 
                 print(f"[cTrader] ✅ Token refreshed successfully")
                 print(f"[cTrader]    New access token: {self.access_token[:20]}...")
+                
+                # Sauvegarder les nouveaux tokens dans la config
+                self._save_tokens_to_config()
+                
                 return True
             else:
                 print(f"[cTrader] ❌ Token refresh failed: {response.status_code}")
                 print(f"[cTrader]    Response: {response.text}")
+                # Garder les anciens tokens
                 return False
                 
         except Exception as e:
             print(f"[cTrader] ❌ Token refresh error: {e}")
+            # Restaurer les anciens tokens
+            self.access_token = old_access_token
+            self.refresh_token = old_refresh_token
             return False
+    
+    def _save_tokens_to_config(self):
+        """Save the new tokens to the config file"""
+        try:
+            import json
+            import os
+            
+            # Trouver le fichier de config
+            config_paths = [
+                os.path.join(os.getcwd(), "config", "settings.json"),
+                os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json"),
+            ]
+            
+            config_path = None
+            for path in config_paths:
+                if os.path.exists(path):
+                    config_path = path
+                    break
+            
+            if not config_path:
+                print("[cTrader] ⚠️  Config file not found, tokens not saved")
+                return
+            
+            # Lire la config
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Mettre à jour les tokens pour ce broker
+            if 'brokers' in config and self.broker_id in config['brokers']:
+                config['brokers'][self.broker_id]['access_token'] = self.access_token
+                config['brokers'][self.broker_id]['refresh_token'] = self.refresh_token
+                
+                # Sauvegarder
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=2)
+                
+                print(f"[cTrader] 💾 Tokens saved to {config_path}")
+            
+        except Exception as e:
+            print(f"[cTrader] ⚠️  Could not save tokens: {e}")
     
     def _enum_value(self, message_obj, field_name: str, wanted: str) -> int:
         """Get enum value by name from protobuf message"""
@@ -152,9 +231,10 @@ class CTraderBroker(BaseBroker):
     async def connect(self) -> bool:
         """Connect and authenticate with cTrader"""
         
-        # Auto-refresh token if refresh_token is available
-        if self.refresh_token and self.config.get("auto_refresh_token", True):
-            self._refresh_access_token()
+        # Auto-refresh token si nécessaire (une seule fois par session)
+        if self._should_refresh_token():
+            if self._refresh_access_token():
+                self._token_refreshed = True
         
         self._ensure_reactor_running()
         
