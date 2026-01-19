@@ -23,6 +23,8 @@
       "client_id": "",
       "client_secret": "",
       "access_token": "",
+      "refresh_token": "",
+      "auto_refresh_token": true,
       "account_id": null,
       "instruments_mapping": {
         "EURUSD": 1,

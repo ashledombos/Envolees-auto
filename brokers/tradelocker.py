@@ -152,7 +152,7 @@ class TradeLockerBroker(BaseBroker):
         """Load and cache instrument mapping"""
         url = f"{self._base_url}/backend-api/trade/accounts/{self._account_id}/instruments"
         try:
-            response = requests.get(url, headers=self._headers(), timeout=10)
+            response = requests.get(url, headers=self._headers(), timeout=30)
             response.raise_for_status()
             data = response.json()
             

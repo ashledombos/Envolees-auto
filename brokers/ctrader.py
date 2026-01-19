@@ -7,6 +7,7 @@ Uses Twisted for async communication
 
 import asyncio
 import time
+import requests
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Callable
 from concurrent.futures import Future
@@ -24,6 +25,7 @@ try:
     from ctrader_open_api.messages.OpenApiMessages_pb2 import (
         ProtoOAApplicationAuthReq,
         ProtoOAAccountAuthReq,
+        ProtoOAGetAccountListByAccessTokenReq,
         ProtoOASymbolsListReq,
         ProtoOANewOrderReq,
         ProtoOACancelOrderReq,
@@ -50,7 +52,11 @@ class CTraderBroker(BaseBroker):
         self.client_id = config.get("client_id", "")
         self.client_secret = config.get("client_secret", "")
         self.access_token = config.get("access_token", "")
-        self.account_id = config.get("account_id")
+        self.refresh_token = config.get("refresh_token", "")
+        
+        # account_id doit être un int
+        acc_id = config.get("account_id")
+        self.account_id = int(acc_id) if acc_id else None
         
         # Connection settings
         self.is_demo = config.get("is_demo", True)
@@ -82,6 +88,44 @@ class CTraderBroker(BaseBroker):
         self._reactor_running = True
         time.sleep(0.5)  # Give reactor time to start
     
+    def _refresh_access_token(self) -> bool:
+        """Refresh the access token using the refresh token"""
+        if not self.refresh_token:
+            print("[cTrader] ⚠️  No refresh token available")
+            return False
+        
+        token_url = "https://openapi.ctrader.com/apps/token"
+        
+        payload = {
+            "grant_type": "refresh_token",
+            "refresh_token": self.refresh_token,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret
+        }
+        
+        try:
+            print("[cTrader] Refreshing access token...")
+            response = requests.post(token_url, data=payload, timeout=15)
+            
+            if response.status_code == 200:
+                data = response.json()
+                self.access_token = data.get("accessToken") or data.get("access_token")
+                new_refresh = data.get("refreshToken") or data.get("refresh_token")
+                if new_refresh:
+                    self.refresh_token = new_refresh
+                
+                print(f"[cTrader] ✅ Token refreshed successfully")
+                print(f"[cTrader]    New access token: {self.access_token[:20]}...")
+                return True
+            else:
+                print(f"[cTrader] ❌ Token refresh failed: {response.status_code}")
+                print(f"[cTrader]    Response: {response.text}")
+                return False
+                
+        except Exception as e:
+            print(f"[cTrader] ❌ Token refresh error: {e}")
+            return False
+    
     def _enum_value(self, message_obj, field_name: str, wanted: str) -> int:
         """Get enum value by name from protobuf message"""
         field = message_obj.DESCRIPTOR.fields_by_name[field_name]
@@ -107,6 +151,11 @@ class CTraderBroker(BaseBroker):
     
     async def connect(self) -> bool:
         """Connect and authenticate with cTrader"""
+        
+        # Auto-refresh token if refresh_token is available
+        if self.refresh_token and self.config.get("auto_refresh_token", True):
+            self._refresh_access_token()
+        
         self._ensure_reactor_running()
         
         # Create client
@@ -140,7 +189,31 @@ class CTraderBroker(BaseBroker):
             if ptype == "ProtoOAApplicationAuthRes":
                 print("[cTrader] ✅ Application authenticated")
                 
-                # Authenticate account
+                if self.account_id:
+                    # Account ID provided, authenticate directly
+                    req = ProtoOAAccountAuthReq()
+                    req.ctidTraderAccountId = self.account_id
+                    req.accessToken = self.access_token
+                    client.send(req)
+                else:
+                    # No account ID, get account list first
+                    print("[cTrader] Getting account list...")
+                    req = ProtoOAGetAccountListByAccessTokenReq()
+                    req.accessToken = self.access_token
+                    client.send(req)
+            
+            elif ptype == "ProtoOAGetAccountListByAccessTokenRes":
+                accounts = list(payload.ctidTraderAccount)
+                if not accounts:
+                    print("[cTrader] ❌ No accounts found for this token")
+                    if not connect_future.done():
+                        connect_future.set_exception(Exception("No accounts found"))
+                    return
+                
+                # Use first account
+                self.account_id = accounts[0].ctidTraderAccountId
+                print(f"[cTrader] Found {len(accounts)} account(s), using: {self.account_id}")
+                
                 req = ProtoOAAccountAuthReq()
                 req.ctidTraderAccountId = self.account_id
                 req.accessToken = self.access_token
