@@ -30,6 +30,9 @@ class TradeLockerBroker(BaseBroker):
         self.password = config.get("password", "")
         self.server = config.get("server", "GFTTL")
         
+        # Account ID from config (optional - if not set, will use first active account)
+        self._configured_account_id = config.get("account_id")
+        
         # API state
         self._access_token: Optional[str] = None
         self._refresh_token: Optional[str] = None
@@ -90,11 +93,42 @@ class TradeLockerBroker(BaseBroker):
             
             # Get accounts
             accounts = await self._get_accounts()
-            if accounts:
-                acc = accounts[0]
-                self._account_id = acc.get('id')
-                self._acc_num = acc.get('accNum')
-                print(f"[TradeLocker] ✅ Account: {self._acc_num} (ID: {self._account_id})")
+            if not accounts:
+                print("[TradeLocker] ❌ No accounts found")
+                return False
+            
+            # Afficher tous les comptes disponibles
+            print(f"[TradeLocker] Found {len(accounts)} account(s):")
+            for acc in accounts:
+                status = "✅" if acc.get('status') == 'ACTIVE' or acc.get('accNum') else "❌"
+                print(f"   {status} ID: {acc.get('id')} | accNum: {acc.get('accNum')} | {acc.get('name', 'N/A')}")
+            
+            # Sélectionner le compte
+            selected_account = None
+            
+            # 1. Si account_id est configuré, l'utiliser
+            if self._configured_account_id:
+                for acc in accounts:
+                    if str(acc.get('id')) == str(self._configured_account_id):
+                        selected_account = acc
+                        break
+                if not selected_account:
+                    print(f"[TradeLocker] ⚠️  Configured account_id {self._configured_account_id} not found")
+            
+            # 2. Sinon, prendre le premier compte actif ou le premier tout court
+            if not selected_account:
+                # Essayer de trouver un compte actif
+                for acc in accounts:
+                    if acc.get('status') == 'ACTIVE':
+                        selected_account = acc
+                        break
+                # Sinon prendre le premier
+                if not selected_account:
+                    selected_account = accounts[0]
+            
+            self._account_id = selected_account.get('id')
+            self._acc_num = selected_account.get('accNum')
+            print(f"[TradeLocker] ✅ Using account: {self._acc_num} (ID: {self._account_id})")
             
             # Load field config and instruments
             self._field_config = await self._get_field_config()

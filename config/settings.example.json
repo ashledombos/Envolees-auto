@@ -47,6 +47,7 @@
       "email": "",
       "password": "",
       "server": "GFTTL",
+      "account_id": null,
       "instruments_mapping": {
         "EURUSD": "EURUSD.X",
         "GBPUSD": "GBPUSD.X",
