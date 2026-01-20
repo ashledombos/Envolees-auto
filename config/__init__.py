@@ -111,7 +111,13 @@ class NotificationsConfig(BaseModel):
     on_order_cancelled: bool = True
     on_order_error: bool = True
     on_filter_skip: bool = True
-    channels: List[str] = Field(default_factory=list)
+    channels: Optional[List[str]] = Field(default_factory=list)
+    
+    def __init__(self, **data):
+        # Convert None to empty list
+        if data.get("channels") is None:
+            data["channels"] = []
+        super().__init__(**data)
 
 
 class AppConfig(BaseModel):
