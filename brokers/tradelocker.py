@@ -226,6 +226,7 @@ class TradeLockerBroker(BaseBroker):
             
             return AccountInfo(
                 account_id=str(self._account_id),
+                broker_name=self.name,
                 balance=balance,
                 equity=equity,
                 margin_free=margin_free,
