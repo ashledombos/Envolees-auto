@@ -305,16 +305,21 @@ class TradeLockerBroker(BaseBroker):
             tl_side = 'buy' if order.side == OrderSide.BUY else 'sell'
             
             # Create order using official library
-            result = self._api.create_order(
-                instrument_id=inst_id,
-                quantity=order.volume,
-                side=tl_side,
-                type_=tl_type,
-                price=order.entry_price if tl_type != 'market' else None,
-                stop_loss=order.stop_loss,
-                take_profit=order.take_profit,
-                # validity could be added for GTC/GTD orders
-            )
+            order_params = {
+                'instrument_id': inst_id,
+                'quantity': order.volume,
+                'side': tl_side,
+                'type_': tl_type,
+                'stop_loss': order.stop_loss,
+                'take_profit': order.take_profit,
+            }
+            
+            # Add price and validity for non-market orders
+            if tl_type != 'market':
+                order_params['price'] = order.entry_price
+                order_params['validity'] = 'GTC'  # Good Till Cancelled
+            
+            result = self._api.create_order(**order_params)
             
             if result is not None:
                 # Extract order ID from result

@@ -111,6 +111,14 @@ class SignalData:
         """Calculate risk in pips (distance from entry to SL)"""
         return abs(self.entry_price - self.stop_loss) / pip_size
     
+    def calculate_rr_ratio(self) -> float:
+        """Calculate Risk/Reward ratio"""
+        risk = abs(self.entry_price - self.stop_loss)
+        reward = abs(self.take_profit - self.entry_price)
+        if risk == 0:
+            return 0.0
+        return reward / risk
+    
     @classmethod
     def from_webhook(cls, data: dict) -> "SignalData":
         """Create SignalData from webhook payload"""
