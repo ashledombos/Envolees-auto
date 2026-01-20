@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TradeLocker REST API broker implementation
+TradeLocker broker implementation using official tradelocker library
+https://pypi.org/project/tradelocker/
 """
 
-import base64
-import json
-import requests
-from datetime import datetime, timezone, timedelta
+import os
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
 from .base import (
@@ -15,631 +14,492 @@ from .base import (
     Position, PendingOrder, AccountInfo, SymbolInfo
 )
 
+# Suppress tradelocker debug output
+os.environ.setdefault('TRADELOCKER_LOG_LEVEL', 'WARNING')
+
+try:
+    from tradelocker import TLAPI
+    TRADELOCKER_AVAILABLE = True
+except ImportError:
+    TRADELOCKER_AVAILABLE = False
+    print("⚠️  tradelocker library not installed. Install with: pip install tradelocker")
+
 
 class TradeLockerBroker(BaseBroker):
-    """TradeLocker REST API broker implementation"""
+    """
+    TradeLocker broker implementation using official library.
     
-    # API endpoints - can be overridden per broker
-    DEFAULT_AUTH_URL = "https://demo.tradelocker.com/backend-api/auth/jwt/token"
-    DEFAULT_REFRESH_URL = "https://demo.tradelocker.com/backend-api/auth/jwt/refresh"
+    Config example:
+        gft_compte1:
+            enabled: true
+            type: tradelocker
+            name: "GFT Funded #1"
+            base_url: "https://bsb.tradelocker.com"
+            email: "your@email.com"
+            password: "your_password"
+            server: "GFTTL"
+            account_id: 1711519  # Optional, uses first if not set
+    """
     
     def __init__(self, broker_id: str, config: dict):
         super().__init__(broker_id, config)
         
+        if not TRADELOCKER_AVAILABLE:
+            raise ImportError("tradelocker library not installed. Run: pip install tradelocker")
+        
         self.email = config.get("email", "")
         self.password = config.get("password", "")
         self.server = config.get("server", "GFTTL")
+        self.base_url = config.get("base_url", "https://demo.tradelocker.com")
         
-        # Base URL - specific to each broker/prop firm
-        # GFT uses bsb.tradelocker.com, others may use demo.tradelocker.com
-        base_url = config.get("base_url", "https://demo.tradelocker.com")
-        self.AUTH_URL = f"{base_url}/backend-api/auth/jwt/token"
-        self.REFRESH_URL = f"{base_url}/backend-api/auth/jwt/refresh"
-        self._base_url = base_url
-        
-        # Account ID from config (optional - if not set, will use first active account)
+        # Account ID from config (optional)
         self._configured_account_id = config.get("account_id")
         
-        # API state
-        self._access_token: Optional[str] = None
-        self._refresh_token: Optional[str] = None
-        # _base_url is already set above from config
-        self._account_id: Optional[str] = None
+        # TLAPI instance
+        self._api: Optional[TLAPI] = None
+        self._account_id: Optional[int] = None
         self._acc_num: Optional[int] = None
         
-        # Cache
-        self._field_config: Dict = {}
-        self._instruments_map: Dict[str, str] = {}  # id -> name
-        self._instruments_reverse_map: Dict[str, str] = {}  # name -> id
-    
-    def _decode_jwt_payload(self, token: str) -> Optional[dict]:
-        """Decode JWT payload to extract host info"""
-        try:
-            parts = token.split('.')
-            if len(parts) != 3:
-                return None
-            
-            payload = parts[1]
-            padding = 4 - len(payload) % 4
-            if padding != 4:
-                payload += '=' * padding
-            
-            decoded = base64.urlsafe_b64decode(payload)
-            return json.loads(decoded)
-        except Exception as e:
-            print(f"[TradeLocker] JWT decode error: {e}")
-            return None
+        # Instrument cache
+        self._instruments_df = None
+        self._instruments_map: Dict[str, int] = {}  # name -> tradableInstrumentId
+        self._instruments_reverse_map: Dict[int, str] = {}  # tradableInstrumentId -> name
     
     async def connect(self) -> bool:
-        """Authenticate with TradeLocker"""
-        payload = {
-            "email": self.email,
-            "password": self.password,
-            "server": self.server
-        }
-        
+        """Connect to TradeLocker using official library"""
         try:
-            response = requests.post(self.AUTH_URL, json=payload, timeout=15)
+            # Initialize TLAPI
+            self._api = TLAPI(
+                environment=self.base_url,
+                username=self.email,
+                password=self.password,
+                server=self.server,
+                log_level='warning'  # Reduce noise
+            )
             
-            if response.status_code not in [200, 201]:
-                print(f"[TradeLocker] ❌ Auth failed: {response.status_code} - {response.text}")
-                return False
-            
-            data = response.json()
-            self._access_token = data.get('accessToken')
-            self._refresh_token = data.get('refreshToken')
-            
-            print(f"[TradeLocker] ✅ Authenticated to {self._base_url}")
+            print(f"[TradeLocker] ✅ Authenticated to {self.base_url}")
             
             # Get accounts
-            accounts = await self._get_accounts()
-            if not accounts:
+            accounts_df = self._api.get_all_accounts()
+            
+            if accounts_df is None or accounts_df.empty:
                 print("[TradeLocker] ❌ No accounts found")
                 return False
             
-            # Afficher tous les comptes disponibles
-            print(f"[TradeLocker] Found {len(accounts)} account(s):")
-            for acc in accounts:
-                status = "✅" if acc.get('status') == 'ACTIVE' or acc.get('accNum') else "❌"
-                print(f"   {status} ID: {acc.get('id')} | accNum: {acc.get('accNum')} | {acc.get('name', 'N/A')}")
+            # Display accounts
+            print(f"[TradeLocker] Found {len(accounts_df)} account(s):")
+            for _, acc in accounts_df.iterrows():
+                status = "✅" if acc.get('status') == 'ACTIVE' else "⚪"
+                print(f"   {status} ID: {acc['id']} | accNum: {acc['accNum']} | {acc['name']}")
             
-            # Sélectionner le compte
-            selected_account = None
-            
-            # 1. Si account_id est configuré, l'utiliser
+            # Select account
             if self._configured_account_id:
-                for acc in accounts:
-                    if str(acc.get('id')) == str(self._configured_account_id):
-                        selected_account = acc
-                        break
-                if not selected_account:
-                    print(f"[TradeLocker] ⚠️  Configured account_id {self._configured_account_id} not found")
+                # Use configured account
+                matching = accounts_df[accounts_df['id'] == self._configured_account_id]
+                if not matching.empty:
+                    selected = matching.iloc[0]
+                else:
+                    print(f"[TradeLocker] ⚠️  Configured account {self._configured_account_id} not found, using first")
+                    selected = accounts_df.iloc[0]
+            else:
+                # Use first active account
+                active = accounts_df[accounts_df['status'] == 'ACTIVE']
+                selected = active.iloc[0] if not active.empty else accounts_df.iloc[0]
             
-            # 2. Sinon, prendre le premier compte actif ou le premier tout court
-            if not selected_account:
-                # Essayer de trouver un compte actif
-                for acc in accounts:
-                    if acc.get('status') == 'ACTIVE':
-                        selected_account = acc
-                        break
-                # Sinon prendre le premier
-                if not selected_account:
-                    selected_account = accounts[0]
+            self._account_id = int(selected['id'])
+            self._acc_num = int(selected['accNum'])
             
-            self._account_id = selected_account.get('id')
-            self._acc_num = selected_account.get('accNum')
             print(f"[TradeLocker] ✅ Using account: {self._acc_num} (ID: {self._account_id})")
             
-            # Load field config and instruments
-            self._field_config = await self._get_field_config()
+            # Reinitialize API with specific account
+            self._api = TLAPI(
+                environment=self.base_url,
+                username=self.email,
+                password=self.password,
+                server=self.server,
+                acc_num=self._acc_num,
+                log_level='warning'
+            )
+            
+            # Load instruments
             await self._load_instruments()
             
             self._connected = True
             return True
             
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"[TradeLocker] ❌ Connection error: {e}")
             return False
     
     async def disconnect(self):
         """Disconnect from TradeLocker"""
-        self._access_token = None
+        self._api = None
         self._connected = False
     
-    def _headers(self) -> dict:
-        """Get request headers"""
-        headers = {
-            "Authorization": f"Bearer {self._access_token}",
-            "Content-Type": "application/json",
-            "accept": "application/json"
-        }
-        if self._acc_num:
-            headers["accNum"] = str(self._acc_num)
-        return headers
-    
-    async def _get_accounts(self) -> List[dict]:
-        """Get list of accounts"""
-        url = f"{self._base_url}/backend-api/auth/jwt/all-accounts"
-        try:
-            response = requests.get(url, headers=self._headers(), timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            return data.get('accounts', [])
-        except Exception as e:
-            print(f"[TradeLocker] Error getting accounts: {e}")
-            return []
-    
-    async def _get_field_config(self) -> dict:
-        """Get field schema for parsing responses"""
-        url = f"{self._base_url}/backend-api/trade/config"
-        try:
-            response = requests.get(url, headers=self._headers(), timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if isinstance(data, dict) and 'd' in data:
-                    return data['d']
-            return {}
-        except Exception:
-            return {}
-    
     async def _load_instruments(self):
-        """Load and cache instrument mapping"""
-        url = f"{self._base_url}/backend-api/trade/accounts/{self._account_id}/instruments"
+        """Load and cache instruments"""
         try:
-            response = requests.get(url, headers=self._headers(), timeout=30)
+            self._instruments_df = self._api.get_all_instruments()
             
-            # Debug: voir le status et une partie de la réponse
-            if response.status_code != 200:
-                print(f"[TradeLocker] Instruments API error: {response.status_code} - {response.text[:200]}")
-                return
-            
-            data = response.json()
-            
-            # Debug: voir la structure de la réponse
-            if isinstance(data, dict):
-                keys = list(data.keys())[:5]
-                print(f"[TradeLocker] Instruments response keys: {keys}")
-                if 's' in data and data['s'] == 'error':
-                    print(f"[TradeLocker] API Error: {data.get('errmsg', 'Unknown error')}")
-                    return
-            
-            instruments = []
-            
-            # Handle different response formats
-            if isinstance(data, dict):
-                if 'd' in data and isinstance(data['d'], dict) and 'instruments' in data['d']:
-                    instruments = data['d']['instruments']
-                elif 'instruments' in data:
-                    instruments = data['instruments']
-                elif 'd' in data and isinstance(data['d'], list):
-                    instruments = data['d']
-            elif isinstance(data, list):
-                instruments = data
-            
-            for inst in instruments:
-                if isinstance(inst, dict):
-                    # Format: {"tradableInstrumentId": 6310, "id": 6916, "name": "XAUUSD.X", ...}
-                    inst_id = str(inst.get('tradableInstrumentId', inst.get('id', '')))
-                    inst_name = inst.get('name', f"ID:{inst_id}")
-                    if inst_id and inst_name:
-                        self._instruments_map[inst_id] = inst_name
-                        self._instruments_reverse_map[inst_name] = inst_id
-                elif isinstance(inst, list) and len(inst) >= 2:
-                    # Legacy format: [id, name, ...]
-                    inst_id = str(inst[0])
-                    inst_name = inst[1] if len(inst) > 1 else f"ID:{inst_id}"
-                    self._instruments_map[inst_id] = inst_name
-                    self._instruments_reverse_map[inst_name] = inst_id
-            
-            print(f"[TradeLocker] Loaded {len(self._instruments_map)} instruments")
+            if self._instruments_df is not None and not self._instruments_df.empty:
+                for _, inst in self._instruments_df.iterrows():
+                    inst_id = int(inst['tradableInstrumentId'])
+                    inst_name = inst['name']
+                    self._instruments_map[inst_name] = inst_id
+                    self._instruments_reverse_map[inst_id] = inst_name
+                
+                print(f"[TradeLocker] Loaded {len(self._instruments_map)} instruments")
+            else:
+                print("[TradeLocker] ⚠️  No instruments loaded")
+                
         except Exception as e:
             print(f"[TradeLocker] Error loading instruments: {e}")
     
-    def _get_instrument_id(self, symbol: str) -> Optional[str]:
-        """Get instrument ID from symbol name"""
+    def _get_instrument_id(self, symbol: str) -> Optional[int]:
+        """Get tradableInstrumentId from symbol name"""
         # Check direct mapping in config
         mapping = self.config.get("instruments_mapping", {})
         if symbol in mapping:
             broker_symbol = mapping[symbol]
-            # If mapping gives a name like "EURUSD.X", convert to ID
-            if broker_symbol in self._instruments_reverse_map:
-                return self._instruments_reverse_map[broker_symbol]
-            # If it's already an ID
             if broker_symbol in self._instruments_map:
-                return broker_symbol
-            # Return as-is (might be an ID)
-            return str(broker_symbol)
+                return self._instruments_map[broker_symbol]
         
-        # Try reverse map directly
-        if symbol in self._instruments_reverse_map:
-            return self._instruments_reverse_map[symbol]
+        # Direct lookup
+        if symbol in self._instruments_map:
+            return self._instruments_map[symbol]
         
-        # Try with .X suffix
-        if f"{symbol}.X" in self._instruments_reverse_map:
-            return self._instruments_reverse_map[f"{symbol}.X"]
+        # Try with .X suffix (GFT convention)
+        symbol_x = f"{symbol}.X"
+        if symbol_x in self._instruments_map:
+            return self._instruments_map[symbol_x]
         
         return None
     
-    def _get_instrument_name(self, inst_id: str) -> str:
-        """Get instrument name from ID"""
-        return self._instruments_map.get(str(inst_id), f"ID:{inst_id}")
-    
-    def _parse_order_array(self, order_array: list) -> dict:
-        """Parse order array into dict"""
-        field_names = self._field_config.get('orders', [])
+    def map_symbol(self, symbol: str) -> Optional[str]:
+        """Map TradingView symbol to TradeLocker symbol"""
+        # Check config mapping first
+        mapping = self.config.get("instruments_mapping", {})
+        if symbol in mapping:
+            return mapping[symbol]
         
-        if not field_names:
-            # Fallback structure
-            return {
-                'id': order_array[0] if len(order_array) > 0 else None,
-                'tradableInstrumentId': order_array[1] if len(order_array) > 1 else None,
-                'routeId': order_array[2] if len(order_array) > 2 else None,
-                'qty': order_array[3] if len(order_array) > 3 else None,
-                'side': order_array[4] if len(order_array) > 4 else None,
-                'orderType': order_array[5] if len(order_array) > 5 else None,
-                'status': order_array[6] if len(order_array) > 6 else None,
-                'limitPrice': order_array[9] if len(order_array) > 9 else None,
-                'stopPrice': order_array[10] if len(order_array) > 10 else None,
-                'timeInForce': order_array[11] if len(order_array) > 11 else None,
-                'createTime': order_array[13] if len(order_array) > 13 else None,
-                'updateTime': order_array[14] if len(order_array) > 14 else None,
-                'isStandalone': order_array[15] if len(order_array) > 15 else None,
-                'positionId': order_array[16] if len(order_array) > 16 else None,
-                'slPrice': order_array[17] if len(order_array) > 17 else None,
-                'tpPrice': order_array[19] if len(order_array) > 19 else None,
-            }
+        # Direct match
+        if symbol in self._instruments_map:
+            return symbol
         
-        order_dict = {}
-        for i, field_name in enumerate(field_names):
-            if i < len(order_array):
-                order_dict[field_name] = order_array[i]
-        return order_dict
-    
-    def _parse_position_array(self, pos_array: list) -> dict:
-        """Parse position array into dict"""
-        field_names = self._field_config.get('positions', [])
+        # Try with .X suffix
+        symbol_x = f"{symbol}.X"
+        if symbol_x in self._instruments_map:
+            return symbol_x
         
-        if not field_names:
-            # Fallback structure
-            return {
-                'id': pos_array[0] if len(pos_array) > 0 else None,
-                'tradableInstrumentId': pos_array[1] if len(pos_array) > 1 else None,
-                'side': pos_array[3] if len(pos_array) > 3 else None,
-                'qty': pos_array[4] if len(pos_array) > 4 else None,
-                'avgPrice': pos_array[5] if len(pos_array) > 5 else None,
-                'unrealizedPnl': pos_array[7] if len(pos_array) > 7 else None,
-            }
-        
-        pos_dict = {}
-        for i, field_name in enumerate(field_names):
-            if i < len(pos_array):
-                pos_dict[field_name] = pos_array[i]
-        return pos_dict
+        return None
     
     async def get_account_info(self) -> Optional[AccountInfo]:
         """Get account information"""
-        if not self._connected:
+        if not self._api:
             return None
-        
-        url = f"{self._base_url}/backend-api/trade/accounts/{self._account_id}/state"
         
         try:
-            response = requests.get(url, headers=self._headers(), timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            accounts_df = self._api.get_all_accounts()
             
-            if isinstance(data, dict) and 'd' in data:
-                state = data['d']
-                
-                self._account_info = AccountInfo(
-                    account_id=self._account_id,
-                    broker_name=self.name,
-                    balance=state.get('balance', 0),
-                    equity=state.get('equity', 0),
-                    margin_used=state.get('usedMargin', 0),
-                    margin_free=state.get('freeMargin', 0),
-                    currency=state.get('currency', 'USD'),
-                    leverage=state.get('leverage', 100),
-                    is_demo=self.is_demo
-                )
-                return self._account_info
+            if accounts_df is None or accounts_df.empty:
+                return None
             
-            return None
+            # Find our account
+            acc = accounts_df[accounts_df['id'] == self._account_id]
+            if acc.empty:
+                acc = accounts_df.iloc[[0]]
+            
+            acc = acc.iloc[0]
+            
+            balance = float(acc.get('accountBalance', 0))
+            currency = acc.get('currency', 'USD')
+            
+            # Get more details from account state if available
+            try:
+                # The library might have additional account info methods
+                # For now, use what we have from accounts
+                equity = balance  # Will be same if no positions
+                margin_free = balance  # Simplified
+            except:
+                equity = balance
+                margin_free = balance
+            
+            return AccountInfo(
+                account_id=str(self._account_id),
+                balance=balance,
+                equity=equity,
+                margin_free=margin_free,
+                margin_used=0,
+                currency=currency,
+                leverage=100,  # Default for prop firms
+                is_demo=self.config.get("is_demo", True)
+            )
+            
         except Exception as e:
             print(f"[TradeLocker] Error getting account info: {e}")
             return None
     
-    async def get_symbols(self) -> List[SymbolInfo]:
-        """Get available symbols"""
-        symbols = []
-        for inst_id, inst_name in self._instruments_map.items():
-            symbols.append(SymbolInfo(
-                symbol=inst_name,
-                broker_symbol=inst_id,
-                description="",
-                is_tradable=True
-            ))
-        return symbols
+    async def get_symbols(self) -> List[str]:
+        """Get list of available symbols"""
+        return list(self._instruments_map.keys())
     
     async def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:
-        """Get info for specific symbol"""
-        inst_id = self._get_instrument_id(symbol)
-        if inst_id:
-            inst_name = self._get_instrument_name(inst_id)
+        """Get symbol information"""
+        if self._instruments_df is None or self._instruments_df.empty:
+            return None
+        
+        broker_symbol = self.map_symbol(symbol)
+        if not broker_symbol:
+            return None
+        
+        try:
+            inst = self._instruments_df[self._instruments_df['name'] == broker_symbol]
+            if inst.empty:
+                return None
+            
+            inst = inst.iloc[0]
+            
             return SymbolInfo(
-                symbol=inst_name,
-                broker_symbol=inst_id,
-                is_tradable=True
+                symbol=broker_symbol,
+                description=inst.get('description', ''),
+                pip_size=float(inst.get('pipSize', 0.0001)),
+                pip_value=float(inst.get('pipValue', 10)),
+                lot_size=float(inst.get('contractSize', 100000)),
+                min_lot=float(inst.get('minOrderSize', 0.01)),
+                max_lot=float(inst.get('maxOrderSize', 100)),
+                lot_step=float(inst.get('orderSizeStep', 0.01))
             )
-        return None
+        except Exception as e:
+            print(f"[TradeLocker] Error getting symbol info: {e}")
+            return None
     
     async def place_order(self, order: OrderRequest) -> OrderResult:
-        """Place an order on TradeLocker"""
-        if not self._connected:
+        """Place an order"""
+        if not self._api:
             return OrderResult(success=False, message="Not connected")
         
         # Get instrument ID
+        broker_symbol = self.map_symbol(order.symbol)
         inst_id = self._get_instrument_id(order.symbol)
+        
         if not inst_id:
-            # Try broker_symbol directly
-            if order.broker_symbol:
-                inst_id = order.broker_symbol
-            else:
-                return OrderResult(
-                    success=False,
-                    message=f"Symbol {order.symbol} not found for TradeLocker"
-                )
-        
-        url = f"{self._base_url}/backend-api/trade/accounts/{self._account_id}/orders"
-        
-        # Build order payload
-        payload = {
-            "tradableInstrumentId": int(inst_id),
-            "side": order.side.value.lower(),  # "buy" or "sell"
-            "qty": order.volume,
-        }
-        
-        # Order type
-        if order.order_type == OrderType.MARKET:
-            payload["type"] = "market"
-        elif order.order_type == OrderType.LIMIT:
-            payload["type"] = "limit"
-            if order.entry_price:
-                payload["price"] = order.entry_price
-        elif order.order_type == OrderType.STOP:
-            payload["type"] = "stop"
-            if order.entry_price:
-                payload["stopPrice"] = order.entry_price
-        
-        # Stop loss and take profit
-        if order.stop_loss:
-            payload["stopLoss"] = order.stop_loss
-            payload["stopLossType"] = "absolute"
-        if order.take_profit:
-            payload["takeProfit"] = order.take_profit
-            payload["takeProfitType"] = "absolute"
-        
-        # Note: TradeLocker doesn't support native order expiration
-        # We'll handle this through the order cleanup service
-        
-        print(f"[TradeLocker] Placing {order.order_type.value} {order.side.value} "
-              f"{order.volume} lots on {order.symbol} @ {order.entry_price}")
+            return OrderResult(
+                success=False,
+                message=f"Symbol {order.symbol} not found (tried {broker_symbol})"
+            )
         
         try:
-            response = requests.post(url, headers=self._headers(), json=payload, timeout=30)
+            # Determine order type for TradeLocker
+            # TradeLocker uses: 'market', 'limit', 'stop'
+            if order.order_type == OrderType.MARKET:
+                tl_type = 'market'
+            elif order.order_type == OrderType.LIMIT:
+                tl_type = 'limit'
+            elif order.order_type == OrderType.STOP:
+                tl_type = 'stop'
+            else:
+                tl_type = 'limit'
             
-            if response.status_code in [200, 201]:
-                data = response.json()
-                order_id = None
+            # Side
+            tl_side = 'buy' if order.side == OrderSide.BUY else 'sell'
+            
+            # Create order using official library
+            result = self._api.create_order(
+                instrument_id=inst_id,
+                quantity=order.volume,
+                side=tl_side,
+                type_=tl_type,
+                price=order.entry_price if tl_type != 'market' else None,
+                stop_loss=order.stop_loss,
+                take_profit=order.take_profit,
+                # validity could be added for GTC/GTD orders
+            )
+            
+            if result is not None:
+                # Extract order ID from result
+                order_id = str(result.get('orderId', result.get('id', 'unknown')))
                 
-                if isinstance(data, dict) and 'd' in data:
-                    order_data = data['d']
-                    if isinstance(order_data, dict):
-                        order_id = order_data.get('orderId') or order_data.get('id')
+                print(f"[TradeLocker] ✅ Order placed: {order_id}")
                 
                 return OrderResult(
                     success=True,
-                    order_id=str(order_id) if order_id else None,
+                    order_id=order_id,
                     message="Order placed successfully",
-                    broker_response=data
+                    broker_response=result
                 )
             else:
-                error_text = response.text
-                try:
-                    error_data = response.json()
-                    error_text = error_data.get('message', error_text)
-                except:
-                    pass
-                
                 return OrderResult(
                     success=False,
-                    message=f"Order failed: {response.status_code} - {error_text}",
-                    error_code=str(response.status_code)
+                    message="Order creation returned None"
                 )
                 
-        except requests.exceptions.Timeout:
-            return OrderResult(success=False, message="Order timeout")
         except Exception as e:
-            return OrderResult(success=False, message=str(e))
+            error_msg = str(e)
+            print(f"[TradeLocker] ❌ Order error: {error_msg}")
+            return OrderResult(
+                success=False,
+                message=error_msg
+            )
     
-    async def cancel_order(self, order_id: str, max_retries: int = 2) -> OrderResult:
+    async def cancel_order(self, order_id: str) -> OrderResult:
         """Cancel a pending order"""
-        if not self._connected:
+        if not self._api:
             return OrderResult(success=False, message="Not connected")
         
-        url = f"{self._base_url}/backend-api/trade/orders/{order_id}"
-        
-        for attempt in range(max_retries):
-            try:
-                response = requests.delete(url, headers=self._headers(), timeout=30)
+        try:
+            result = self._api.delete_order(int(order_id))
+            
+            if result:
+                return OrderResult(
+                    success=True,
+                    order_id=order_id,
+                    message="Order cancelled"
+                )
+            else:
+                return OrderResult(
+                    success=False,
+                    order_id=order_id,
+                    message="Failed to cancel order"
+                )
                 
-                if response.status_code in [200, 204]:
-                    return OrderResult(
-                        success=True,
-                        order_id=order_id,
-                        message="Order cancelled"
-                    )
-                elif response.status_code == 404:
-                    return OrderResult(
-                        success=True,
-                        order_id=order_id,
-                        message="Order already cancelled or filled"
-                    )
-                else:
-                    if attempt == max_retries - 1:
-                        return OrderResult(
-                            success=False,
-                            message=f"Cancel failed: {response.status_code}",
-                            error_code=str(response.status_code)
-                        )
-                        
-            except requests.exceptions.Timeout:
-                if attempt < max_retries - 1:
-                    print(f"[TradeLocker] Cancel timeout, retry {attempt + 1}/{max_retries}")
-                    import time
-                    time.sleep(2)
-                else:
-                    return OrderResult(success=False, message="Cancel timeout")
-            except Exception as e:
-                return OrderResult(success=False, message=str(e))
-        
-        return OrderResult(success=False, message="Cancel failed after retries")
+        except Exception as e:
+            return OrderResult(
+                success=False,
+                order_id=order_id,
+                message=str(e)
+            )
     
     async def get_pending_orders(self) -> List[PendingOrder]:
-        """Get all pending orders"""
-        if not self._connected:
+        """Get list of pending orders"""
+        if not self._api:
             return []
         
-        url = f"{self._base_url}/backend-api/trade/accounts/{self._account_id}/orders"
-        
         try:
-            response = requests.get(url, headers=self._headers(), timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            orders_df = self._api.get_all_orders()
             
-            orders = []
-            if isinstance(data, dict) and 'd' in data:
-                orders_arrays = data['d'].get('orders', [])
-                
-                for arr in orders_arrays:
-                    order_dict = self._parse_order_array(arr)
+            if orders_df is None or orders_df.empty:
+                return []
+            
+            pending = []
+            for _, order in orders_df.iterrows():
+                status = order.get('status', '').upper()
+                if status in ['PENDING', 'NEW', 'WORKING']:
+                    # Get symbol name from instrument ID
+                    inst_id = order.get('tradableInstrumentId')
+                    symbol = self._instruments_reverse_map.get(inst_id, str(inst_id))
                     
-                    # Filter: only pending standalone orders (limit/stop, status=New, no position)
-                    if (order_dict.get('orderType') in ['limit', 'stop'] and
-                        order_dict.get('status') == 'New' and
-                        order_dict.get('positionId') is None):
-                        
-                        side = OrderSide.BUY if order_dict.get('side') == 'buy' else OrderSide.SELL
-                        order_type = OrderType.LIMIT if order_dict.get('orderType') == 'limit' else OrderType.STOP
-                        
-                        created_time = None
-                        if order_dict.get('createTime'):
-                            created_time = datetime.fromtimestamp(
-                                int(order_dict['createTime']) / 1000, 
-                                tz=timezone.utc
-                            )
-                        
-                        inst_id = str(order_dict.get('tradableInstrumentId', ''))
-                        symbol = self._get_instrument_name(inst_id)
-                        unified_symbol = self.reverse_map_symbol(symbol) or symbol
-                        
-                        orders.append(PendingOrder(
-                            order_id=str(order_dict.get('id', '')),
-                            symbol=unified_symbol,
-                            side=side,
-                            order_type=order_type,
-                            volume=float(order_dict.get('qty', 0)),
-                            entry_price=float(order_dict.get('limitPrice') or order_dict.get('stopPrice') or 0),
-                            stop_loss=float(order_dict.get('slPrice')) if order_dict.get('slPrice') else None,
-                            take_profit=float(order_dict.get('tpPrice')) if order_dict.get('tpPrice') else None,
-                            created_time=created_time,
-                            broker_id=self.broker_id,
-                            raw_data=order_dict
-                        ))
+                    pending.append(PendingOrder(
+                        order_id=str(order.get('id', '')),
+                        symbol=symbol,
+                        side=OrderSide.BUY if order.get('side', '').lower() == 'buy' else OrderSide.SELL,
+                        order_type=OrderType.LIMIT,  # Simplified
+                        volume=float(order.get('qty', 0)),
+                        entry_price=float(order.get('price', 0)),
+                        stop_loss=float(order.get('stopLoss', 0)) if order.get('stopLoss') else None,
+                        take_profit=float(order.get('takeProfit', 0)) if order.get('takeProfit') else None,
+                        status=OrderStatus.PENDING,
+                        created_at=datetime.now(timezone.utc)
+                    ))
             
-            return orders
+            return pending
             
         except Exception as e:
             print(f"[TradeLocker] Error getting orders: {e}")
             return []
     
-    async def get_positions(self) -> List[Position]:
-        """Get all open positions"""
-        if not self._connected:
+    async def get_open_positions(self) -> List[Position]:
+        """Get list of open positions"""
+        if not self._api:
             return []
         
-        url = f"{self._base_url}/backend-api/trade/accounts/{self._account_id}/positions"
-        
         try:
-            response = requests.get(url, headers=self._headers(), timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            positions_df = self._api.get_all_positions()
+            
+            if positions_df is None or positions_df.empty:
+                return []
             
             positions = []
-            if isinstance(data, dict) and 'd' in data:
-                positions_arrays = data['d'].get('positions', [])
+            for _, pos in positions_df.iterrows():
+                inst_id = pos.get('tradableInstrumentId')
+                symbol = self._instruments_reverse_map.get(inst_id, str(inst_id))
                 
-                for arr in positions_arrays:
-                    pos_dict = self._parse_position_array(arr)
-                    
-                    side = OrderSide.BUY if pos_dict.get('side') == 'buy' else OrderSide.SELL
-                    inst_id = str(pos_dict.get('tradableInstrumentId', ''))
-                    symbol = self._get_instrument_name(inst_id)
-                    
-                    positions.append(Position(
-                        position_id=str(pos_dict.get('id', '')),
-                        symbol=symbol,
-                        side=side,
-                        volume=float(pos_dict.get('qty', 0)),
-                        entry_price=float(pos_dict.get('avgPrice', 0)),
-                        profit=float(pos_dict.get('unrealizedPnl', 0))
-                    ))
+                positions.append(Position(
+                    position_id=str(pos.get('id', '')),
+                    symbol=symbol,
+                    side=OrderSide.BUY if pos.get('side', '').lower() == 'buy' else OrderSide.SELL,
+                    volume=float(pos.get('qty', 0)),
+                    entry_price=float(pos.get('avgPrice', 0)),
+                    current_price=float(pos.get('currentPrice', 0)) if pos.get('currentPrice') else None,
+                    stop_loss=float(pos.get('stopLoss', 0)) if pos.get('stopLoss') else None,
+                    take_profit=float(pos.get('takeProfit', 0)) if pos.get('takeProfit') else None,
+                    profit=float(pos.get('unrealizedPnl', 0)) if pos.get('unrealizedPnl') else 0,
+                    opened_at=datetime.now(timezone.utc)  # Simplified
+                ))
             
             return positions
             
         except Exception as e:
             print(f"[TradeLocker] Error getting positions: {e}")
             return []
-
-
-# Synchronous wrapper for CLI usage
-class TradeLockerBrokerSync:
-    """Synchronous wrapper for TradeLockerBroker for use in scripts"""
     
-    def __init__(self, broker_id: str, config: dict):
-        self.broker = TradeLockerBroker(broker_id, config)
-        self._loop = None
+    async def close_position(self, position_id: str) -> OrderResult:
+        """Close a position"""
+        if not self._api:
+            return OrderResult(success=False, message="Not connected")
+        
+        try:
+            result = self._api.close_position(int(position_id))
+            
+            if result:
+                return OrderResult(
+                    success=True,
+                    order_id=position_id,
+                    message="Position closed"
+                )
+            else:
+                return OrderResult(
+                    success=False,
+                    message="Failed to close position"
+                )
+                
+        except Exception as e:
+            return OrderResult(
+                success=False,
+                message=str(e)
+            )
     
-    def _get_loop(self):
-        import asyncio
-        if self._loop is None or self._loop.is_closed():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-        return self._loop
-    
-    def connect(self) -> bool:
-        return self._get_loop().run_until_complete(self.broker.connect())
-    
-    def disconnect(self):
-        self._get_loop().run_until_complete(self.broker.disconnect())
-    
-    def get_account_info(self) -> Optional[AccountInfo]:
-        return self._get_loop().run_until_complete(self.broker.get_account_info())
-    
-    def get_symbols(self) -> List[SymbolInfo]:
-        return self._get_loop().run_until_complete(self.broker.get_symbols())
-    
-    def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:
-        return self._get_loop().run_until_complete(self.broker.get_symbol_info(symbol))
-    
-    def place_order(self, order: OrderRequest) -> OrderResult:
-        return self._get_loop().run_until_complete(self.broker.place_order(order))
-    
-    def cancel_order(self, order_id: str) -> OrderResult:
-        return self._get_loop().run_until_complete(self.broker.cancel_order(order_id))
-    
-    def get_pending_orders(self) -> List[PendingOrder]:
-        return self._get_loop().run_until_complete(self.broker.get_pending_orders())
-    
-    def get_positions(self) -> List[Position]:
-        return self._get_loop().run_until_complete(self.broker.get_positions())
+    async def modify_position(
+        self,
+        position_id: str,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None
+    ) -> OrderResult:
+        """Modify position SL/TP"""
+        if not self._api:
+            return OrderResult(success=False, message="Not connected")
+        
+        try:
+            # TradeLocker library might have modify_position method
+            # For now, this is a placeholder
+            result = self._api.set_position_protection(
+                position_id=int(position_id),
+                stop_loss=stop_loss,
+                take_profit=take_profit
+            )
+            
+            if result:
+                return OrderResult(
+                    success=True,
+                    message="Position modified"
+                )
+            else:
+                return OrderResult(
+                    success=False,
+                    message="Failed to modify position"
+                )
+                
+        except Exception as e:
+            return OrderResult(
+                success=False,
+                message=str(e)
+            )

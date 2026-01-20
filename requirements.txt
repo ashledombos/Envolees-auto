@@ -9,6 +9,7 @@ service_identity>=21.1.0
 
 # HTTP requests (TradeLocker)
 requests>=2.31.0
+tradelocker>=0.56.0
 
 # Configuration & Utils
 python-dotenv>=1.0.0

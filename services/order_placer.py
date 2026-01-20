@@ -356,9 +356,8 @@ class OrderPlacer:
                 )
                 
                 if self.config.notifications.on_filter_skip:
-                    notification_service.notify(
-                        f"⏭️ {broker.name}: Skipped {signal.symbol} - {filter_check.message}"
-                    )
+                    # Log instead of notify (notification system expects Notification objects)
+                    print(f"[Notification] ⏭️ {broker.name}: Skipped {signal.symbol} - {filter_check.message}")
                 continue
             
             # Place order

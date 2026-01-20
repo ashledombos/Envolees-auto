@@ -1,0 +1,74 @@
+//@version=5
+indicator("Test Webhook Envolées", overlay=true)
+
+// =============================================================================
+// INDICATEUR DE TEST POUR WEBHOOKS
+// =============================================================================
+// Cet indicateur ne génère PAS de signaux automatiques.
+// Il sert uniquement à tester manuellement l'envoi de webhooks.
+//
+// UTILISATION:
+// 1. Ajouter cet indicateur sur un graphique
+// 2. Créer une alerte avec les paramètres ci-dessous
+// 3. L'alerte enverra un webhook de test quand déclenchée manuellement
+//
+// CONFIGURATION DE L'ALERTE:
+// - Condition: "Test Webhook Envolées" → "Test Signal"
+// - Webhook URL: http://VOTRE_SERVEUR:5000/webhook?token=VOTRE_TOKEN
+// - Message: (copier le JSON ci-dessous et adapter)
+// =============================================================================
+
+// Paramètres d'entrée pour personnaliser le test
+i_side = input.string("buy", "Direction", options=["buy", "sell"])
+i_entry = input.float(0.0, "Entry Price (0 = prix actuel)")
+i_sl_pips = input.float(50, "Stop Loss (pips)")
+i_tp_pips = input.float(100, "Take Profit (pips)")
+
+// Calcul des prix
+pip = syminfo.mintick * 10  // Approximation du pip
+entry = i_entry > 0 ? i_entry : close
+sl = i_side == "buy" ? entry - (i_sl_pips * pip) : entry + (i_sl_pips * pip)
+tp = i_side == "buy" ? entry + (i_tp_pips * pip) : entry - (i_tp_pips * pip)
+
+// Affichage sur le graphique
+plot(entry, "Entry", color=color.blue, linewidth=2)
+plot(sl, "Stop Loss", color=color.red, linewidth=1, style=plot.style_linebr)
+plot(tp, "Take Profit", color=color.green, linewidth=1, style=plot.style_linebr)
+
+// Label avec les infos
+var label infoLabel = na
+if barstate.islast
+    label.delete(infoLabel)
+    infoLabel := label.new(
+        bar_index, high,
+        "Test Signal\n" +
+        "Side: " + i_side + "\n" +
+        "Entry: " + str.tostring(entry, format.mintick) + "\n" +
+        "SL: " + str.tostring(sl, format.mintick) + "\n" +
+        "TP: " + str.tostring(tp, format.mintick),
+        style=label.style_label_down,
+        color=i_side == "buy" ? color.green : color.red,
+        textcolor=color.white
+    )
+
+// =============================================================================
+// CONDITION D'ALERTE
+// =============================================================================
+// Cette condition est toujours vraie - l'alerte se déclenchera selon
+// votre configuration (une fois, à chaque bougie, etc.)
+alertcondition(true, "Test Signal", "Signal de test déclenché")
+
+// =============================================================================
+// MESSAGE WEBHOOK À COPIER DANS L'ALERTE
+// =============================================================================
+// Remplacez les valeurs par les vraies valeurs calculées ou utilisez les placeholders
+//
+// Pour EURUSD Buy @ 1.0400, SL 1.0350, TP 1.0500:
+// {"symbol": "EURUSD", "side": "buy", "entry": 1.0400, "sl": 1.0350, "tp": 1.0500, "timeframe": "240"}
+//
+// Pour XAUUSD Sell @ 2750, SL 2780, TP 2660:
+// {"symbol": "XAUUSD", "side": "sell", "entry": 2750, "sl": 2780, "tp": 2660, "timeframe": "240"}
+//
+// Avec variables TradingView (pour stratégies):
+// {"symbol": "{{ticker}}", "side": "{{strategy.order.action}}", "entry": {{strategy.order.price}}, "sl": {{plot("SL")}}, "tp": {{plot("TP")}}, "timeframe": "{{interval}}"}
+// =============================================================================
