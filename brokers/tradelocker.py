@@ -19,9 +19,9 @@ from .base import (
 class TradeLockerBroker(BaseBroker):
     """TradeLocker REST API broker implementation"""
     
-    # API endpoints
-    AUTH_URL = "https://demo.tradelocker.com/backend-api/auth/jwt/token"
-    REFRESH_URL = "https://demo.tradelocker.com/backend-api/auth/jwt/refresh"
+    # API endpoints - can be overridden per broker
+    DEFAULT_AUTH_URL = "https://demo.tradelocker.com/backend-api/auth/jwt/token"
+    DEFAULT_REFRESH_URL = "https://demo.tradelocker.com/backend-api/auth/jwt/refresh"
     
     def __init__(self, broker_id: str, config: dict):
         super().__init__(broker_id, config)
@@ -29,6 +29,13 @@ class TradeLockerBroker(BaseBroker):
         self.email = config.get("email", "")
         self.password = config.get("password", "")
         self.server = config.get("server", "GFTTL")
+        
+        # Base URL - specific to each broker/prop firm
+        # GFT uses bsb.tradelocker.com, others may use demo.tradelocker.com
+        base_url = config.get("base_url", "https://demo.tradelocker.com")
+        self.AUTH_URL = f"{base_url}/backend-api/auth/jwt/token"
+        self.REFRESH_URL = f"{base_url}/backend-api/auth/jwt/refresh"
+        self._base_url = base_url
         
         # Account ID from config (optional - if not set, will use first active account)
         self._configured_account_id = config.get("account_id")
@@ -81,13 +88,6 @@ class TradeLockerBroker(BaseBroker):
             data = response.json()
             self._access_token = data.get('accessToken')
             self._refresh_token = data.get('refreshToken')
-            
-            # Extract host from JWT
-            jwt_payload = self._decode_jwt_payload(self._access_token)
-            if jwt_payload and 'host' in jwt_payload:
-                self._base_url = f"https://{jwt_payload['host']}"
-            else:
-                self._base_url = "https://demo.tradelocker.com"
             
             print(f"[TradeLocker] ✅ Authenticated to {self._base_url}")
             
