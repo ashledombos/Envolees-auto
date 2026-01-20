@@ -503,3 +503,63 @@ class TradeLockerBroker(BaseBroker):
                 success=False,
                 message=str(e)
             )
+
+
+# =============================================================================
+# Synchronous Wrapper
+# =============================================================================
+
+import asyncio
+
+class TradeLockerBrokerSync(TradeLockerBroker):
+    """Synchronous wrapper for TradeLockerBroker"""
+    
+    def __init__(self, broker_id: str, config: dict):
+        super().__init__(broker_id, config)
+        self._loop = None
+    
+    def _get_loop(self):
+        if self._loop is None or self._loop.is_closed():
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+        return self._loop
+    
+    def connect(self) -> bool:
+        return self._get_loop().run_until_complete(super().connect())
+    
+    def disconnect(self):
+        return self._get_loop().run_until_complete(super().disconnect())
+    
+    def get_account_info(self) -> Optional[AccountInfo]:
+        return self._get_loop().run_until_complete(super().get_account_info())
+    
+    def get_symbols(self) -> List[str]:
+        return self._get_loop().run_until_complete(super().get_symbols())
+    
+    def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:
+        return self._get_loop().run_until_complete(super().get_symbol_info(symbol))
+    
+    def place_order(self, order: OrderRequest) -> OrderResult:
+        return self._get_loop().run_until_complete(super().place_order(order))
+    
+    def cancel_order(self, order_id: str) -> OrderResult:
+        return self._get_loop().run_until_complete(super().cancel_order(order_id))
+    
+    def get_pending_orders(self) -> List[PendingOrder]:
+        return self._get_loop().run_until_complete(super().get_pending_orders())
+    
+    def get_open_positions(self) -> List[Position]:
+        return self._get_loop().run_until_complete(super().get_open_positions())
+    
+    def close_position(self, position_id: str) -> OrderResult:
+        return self._get_loop().run_until_complete(super().close_position(position_id))
+    
+    def modify_position(
+        self,
+        position_id: str,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None
+    ) -> OrderResult:
+        return self._get_loop().run_until_complete(
+            super().modify_position(position_id, stop_loss, take_profit)
+        )
