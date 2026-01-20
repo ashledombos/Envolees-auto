@@ -486,12 +486,34 @@ class CTraderBroker(BaseBroker):
         if not self._connected:
             return OrderResult(success=False, message="Not connected")
         
-        # Get broker symbol
+        # Get broker symbol (could be name or ID)
         broker_symbol = order.broker_symbol or self.map_symbol(order.symbol)
         if not broker_symbol:
             return OrderResult(
                 success=False, 
                 message=f"Symbol {order.symbol} not mapped for cTrader"
+            )
+        
+        # Resolve symbol name to ID if needed
+        symbol_id = None
+        try:
+            # First try as int (already an ID)
+            symbol_id = int(broker_symbol)
+        except ValueError:
+            # It's a name, need to look up the ID
+            symbol_info = await self.get_symbol_info(broker_symbol)
+            if symbol_info:
+                symbol_id = int(symbol_info.broker_symbol)
+            else:
+                return OrderResult(
+                    success=False,
+                    message=f"Symbol {broker_symbol} not found in cTrader"
+                )
+        
+        if not symbol_id:
+            return OrderResult(
+                success=False,
+                message=f"Could not resolve symbol ID for {broker_symbol}"
             )
         
         loop = asyncio.get_event_loop()
@@ -501,7 +523,7 @@ class CTraderBroker(BaseBroker):
         try:
             req = ProtoOANewOrderReq()
             req.ctidTraderAccountId = self.account_id
-            req.symbolId = int(broker_symbol)
+            req.symbolId = symbol_id
             
             # Order type
             if order.order_type == OrderType.MARKET:

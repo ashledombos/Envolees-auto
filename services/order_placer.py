@@ -467,6 +467,7 @@ class OrderPlacer:
         # Create order request
         order = OrderRequest(
             symbol=signal.symbol,
+            broker_symbol=broker_symbol,  # Pass the broker-specific symbol
             side=signal.order_side,
             order_type=signal.broker_order_type,
             volume=position_size.lots,

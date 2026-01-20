@@ -329,7 +329,13 @@ class TradeLockerBroker(BaseBroker):
             
             if result is not None:
                 # Extract order ID from result
-                order_id = str(result.get('orderId', result.get('id', 'unknown')))
+                # The library may return an int (order ID) or a dict
+                if isinstance(result, int):
+                    order_id = str(result)
+                elif isinstance(result, dict):
+                    order_id = str(result.get('orderId', result.get('id', 'unknown')))
+                else:
+                    order_id = str(result)
                 
                 print(f"[TradeLocker] ✅ Order placed: {order_id}")
                 
