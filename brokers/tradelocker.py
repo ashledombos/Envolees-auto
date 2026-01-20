@@ -407,8 +407,8 @@ class TradeLockerBroker(BaseBroker):
             print(f"[TradeLocker] Error getting orders: {e}")
             return []
     
-    async def get_open_positions(self) -> List[Position]:
-        """Get list of open positions"""
+    async def get_positions(self) -> List[Position]:
+        """Get all open positions"""
         if not self._api:
             return []
         
@@ -548,8 +548,8 @@ class TradeLockerBrokerSync(TradeLockerBroker):
     def get_pending_orders(self) -> List[PendingOrder]:
         return self._get_loop().run_until_complete(super().get_pending_orders())
     
-    def get_open_positions(self) -> List[Position]:
-        return self._get_loop().run_until_complete(super().get_open_positions())
+    def get_positions(self) -> List[Position]:
+        return self._get_loop().run_until_complete(super().get_positions())
     
     def close_position(self, position_id: str) -> OrderResult:
         return self._get_loop().run_until_complete(super().close_position(position_id))
