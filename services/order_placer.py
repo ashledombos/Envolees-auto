@@ -223,8 +223,15 @@ class OrderPlacer:
             )
         
         # 2. Check margin
-        if account_info.margin_free is not None and account_info.equity is not None:
-            margin_percent = (account_info.margin_free / account_info.equity * 100) if account_info.equity > 0 else 0
+        # Note: margin_free can be 0 or None when no positions are open
+        # In that case, 100% of equity is available as margin
+        if account_info.equity is not None and account_info.equity > 0:
+            if account_info.margin_free is not None and account_info.margin_free > 0:
+                margin_percent = (account_info.margin_free / account_info.equity * 100)
+            else:
+                # No margin used = 100% available (or broker doesn't report margin_free)
+                margin_percent = 100.0
+            
             if margin_percent < limits.min_margin_percent:
                 return FilterCheckResult(
                     passed=False,
@@ -350,8 +357,7 @@ class OrderPlacer:
                 
                 if self.config.notifications.on_filter_skip:
                     notification_service.notify(
-                        f"⏭️ {broker.name}: Skipped {signal.symbol}",
-                        filter_check.message
+                        f"⏭️ {broker.name}: Skipped {signal.symbol} - {filter_check.message}"
                     )
                 continue
             

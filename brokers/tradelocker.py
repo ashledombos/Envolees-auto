@@ -187,19 +187,51 @@ class TradeLockerBroker(BaseBroker):
         url = f"{self._base_url}/backend-api/trade/accounts/{self._account_id}/instruments"
         try:
             response = requests.get(url, headers=self._headers(), timeout=30)
-            response.raise_for_status()
+            
+            # Debug: voir le status et une partie de la réponse
+            if response.status_code != 200:
+                print(f"[TradeLocker] Instruments API error: {response.status_code} - {response.text[:200]}")
+                return
+            
             data = response.json()
             
-            if isinstance(data, dict) and 'd' in data:
-                instruments = data['d'].get('instruments', [])
-                for inst in instruments:
-                    if isinstance(inst, list) and len(inst) >= 2:
-                        inst_id = str(inst[0])
-                        inst_name = inst[1] if len(inst) > 1 else f"ID:{inst_id}"
+            # Debug: voir la structure de la réponse
+            if isinstance(data, dict):
+                keys = list(data.keys())[:5]
+                print(f"[TradeLocker] Instruments response keys: {keys}")
+                if 's' in data and data['s'] == 'error':
+                    print(f"[TradeLocker] API Error: {data.get('errmsg', 'Unknown error')}")
+                    return
+            
+            instruments = []
+            
+            # Handle different response formats
+            if isinstance(data, dict):
+                if 'd' in data and isinstance(data['d'], dict) and 'instruments' in data['d']:
+                    instruments = data['d']['instruments']
+                elif 'instruments' in data:
+                    instruments = data['instruments']
+                elif 'd' in data and isinstance(data['d'], list):
+                    instruments = data['d']
+            elif isinstance(data, list):
+                instruments = data
+            
+            for inst in instruments:
+                if isinstance(inst, dict):
+                    # Format: {"tradableInstrumentId": 6310, "id": 6916, "name": "XAUUSD.X", ...}
+                    inst_id = str(inst.get('tradableInstrumentId', inst.get('id', '')))
+                    inst_name = inst.get('name', f"ID:{inst_id}")
+                    if inst_id and inst_name:
                         self._instruments_map[inst_id] = inst_name
                         self._instruments_reverse_map[inst_name] = inst_id
-                
-                print(f"[TradeLocker] Loaded {len(self._instruments_map)} instruments")
+                elif isinstance(inst, list) and len(inst) >= 2:
+                    # Legacy format: [id, name, ...]
+                    inst_id = str(inst[0])
+                    inst_name = inst[1] if len(inst) > 1 else f"ID:{inst_id}"
+                    self._instruments_map[inst_id] = inst_name
+                    self._instruments_reverse_map[inst_name] = inst_id
+            
+            print(f"[TradeLocker] Loaded {len(self._instruments_map)} instruments")
         except Exception as e:
             print(f"[TradeLocker] Error loading instruments: {e}")
     
