@@ -1,103 +1,116 @@
 # Trading Automation System
 
-Système automatisé pour recevoir des alertes TradingView et placer des ordres sur **FTMO (cTrader)** et **Goat Funded Trader (TradeLocker)**.
+Système d'automatisation pour exécuter les alertes TradingView sur plusieurs brokers (FTMO/cTrader et GFT/TradeLocker).
 
 ## 🎯 Fonctionnalités
 
-- ✅ **Réception webhooks TradingView** : Serveur Flask pour recevoir les alertes
-- ✅ **Multi-broker** : Support cTrader (FTMO) et TradeLocker (GFT)
-- ✅ **Calcul automatique du lot** : Basé sur % de risque du capital
-- ✅ **Gestion expiration ordres** : Native (cTrader) ou via cleanup (TradeLocker)
-- ✅ **Notifications** : Email, Telegram, Discord
-- ✅ **CLI complet** : Tests et gestion en ligne de commande
+- **Webhook server** : Reçoit les alertes TradingView et place les ordres
+- **Multi-broker** : Support cTrader (FTMO) et TradeLocker (Goat Funded Trader)
+- **Ordres limites** : Place des ordres avec SL/TP basés sur les FVG
+- **Expiration automatique** : Annule les ordres non déclenchés après N bougies
+- **Gestion du risque** : Calcul automatique de la taille de position (% du capital)
+- **Notifications** : Alertes optionnelles (Telegram, Discord, Email...)
+- **CLI complète** : Gestion des brokers, ordres, et configuration
 
-## 📁 Structure du projet
-
-```
-trading-automation/
-├── brokers/              # Connecteurs broker
-│   ├── base.py          # Classes et interfaces de base
-│   ├── ctrader.py       # cTrader Open API
-│   └── tradelocker.py   # TradeLocker REST API
-├── config/
-│   ├── __init__.py      # Gestion de la configuration
-│   └── settings.json    # Votre configuration (à créer)
-├── services/
-│   ├── order_placer.py  # Placement d'ordres
-│   └── order_cleaner.py # Nettoyage ordres expirés
-├── utils/
-│   └── notifications.py # Système de notifications
-├── webhook/
-│   └── server.py        # Serveur webhook Flask
-├── cli/
-│   └── main.py          # Interface CLI
-├── pine/
-│   └── envolees_webhook.pine  # Script TradingView
-└── tests/               # Scripts de test
-```
-
-## 🚀 Installation rapide
+## 📦 Installation
 
 ```bash
-# 1. Cloner ou extraire le projet
-cd trading-automation
+# Cloner ou extraire le projet
+cd ~/dev/envolees-auto
 
-# 2. Setup automatique
-chmod +x setup.sh
+# Créer l'environnement virtuel et installer les dépendances
 ./setup.sh
 
-# 3. Éditer la configuration
-nano config/settings.json
+# Activer l'environnement (à faire à chaque session)
+source venv/bin/activate
 ```
+
+### Dépendances système
+
+- Python 3.10+
+- pip
 
 ## ⚙️ Configuration
 
-Copiez `config/settings.example.json` vers `config/settings.json` et remplissez :
+Copier et éditer le fichier de configuration :
 
-### FTMO / cTrader
+```bash
+cp config/settings.example.json config/settings.json
+nano config/settings.json
+```
+
+### Configuration cTrader (FTMO)
 
 ```json
 "ftmo_ctrader": {
   "enabled": true,
   "type": "ctrader",
-  "client_id": "votre_client_id",
-  "client_secret": "votre_client_secret",
-  "access_token": "votre_access_token",
-  "account_id": 12345678
+  "name": "FTMO cTrader",
+  "is_demo": true,
+  "client_id": "YOUR_CLIENT_ID",
+  "client_secret": "YOUR_CLIENT_SECRET",
+  "access_token": "YOUR_ACCESS_TOKEN",
+  "refresh_token": "YOUR_REFRESH_TOKEN",
+  "auto_refresh_token": true,
+  "account_id": 12345678,
+  "instruments_mapping": {}
 }
 ```
 
-Pour obtenir les credentials cTrader :
-1. Connectez-vous sur [Open API](https://openapi.ctrader.com/)
-2. Créez une application
-3. Obtenez les tokens OAuth
+#### Obtenir les credentials cTrader
 
-### GFT / TradeLocker
+1. Aller sur [OpenAPI cTrader](https://openapi.ctrader.com/)
+2. Créer une application
+3. Générer un access_token et refresh_token via OAuth2
+4. Le système rafraîchit automatiquement les tokens (validité ~30 jours)
+
+> **Note** : Les tokens sont sauvegardés automatiquement dans `settings.json` après chaque refresh.
+
+### Configuration TradeLocker (GFT)
 
 ```json
 "gft_tradelocker": {
   "enabled": true,
   "type": "tradelocker",
-  "email": "votre@email.com",
-  "password": "votre_mot_de_passe",
-  "server": "GFTTL"
+  "name": "Goat Funded Trader",
+  "is_demo": true,
+  "email": "your@email.com",
+  "password": "your_password",
+  "server": "GFTTL",
+  "account_id": null,
+  "instruments_mapping": {}
 }
 ```
 
-### Mapping des instruments
+> **Note** : Si vous avez plusieurs comptes, lancez `broker test` pour voir la liste des IDs, puis configurez `account_id` avec l'ID du compte actif souhaité.
 
-Configurez le mapping entre le symbole unifié et les IDs broker :
+### Configuration générale
 
 ```json
-"instruments_mapping": {
-  "EURUSD": 1,           // cTrader: symbolId
-  "EURUSD": "EURUSD.X"   // TradeLocker: nom exact
+"general": {
+  "risk_percent": 0.5,
+  "default_rr_ratio": 2.5,
+  "order_timeout_candles": 4,
+  "candle_timeframe_minutes": 240
 }
 ```
 
-## 📡 Utilisation
+| Paramètre | Description |
+|-----------|-------------|
+| `risk_percent` | Risque par trade (% du capital) |
+| `default_rr_ratio` | Ratio Risk/Reward par défaut |
+| `order_timeout_candles` | Nombre de bougies avant expiration |
+| `candle_timeframe_minutes` | Timeframe en minutes (240 = H4) |
 
-### 1. Tester les connexions broker
+## 🖥️ Utilisation CLI
+
+Toujours activer le venv avant utilisation :
+
+```bash
+source venv/bin/activate
+```
+
+### Tester les connexions
 
 ```bash
 # Tester cTrader
@@ -105,151 +118,213 @@ python cli/main.py broker test ftmo_ctrader
 
 # Tester TradeLocker
 python cli/main.py broker test gft_tradelocker
-
-# Lister les symboles disponibles
-python cli/main.py broker symbols ftmo_ctrader --search EUR
 ```
 
-### 2. Démarrer le serveur webhook
+### Lister les symboles
+
+```bash
+# Tous les symboles
+python cli/main.py broker symbols ftmo_ctrader
+
+# Rechercher
+python cli/main.py broker symbols ftmo_ctrader --search EUR
+python cli/main.py broker symbols ftmo_ctrader --search GOLD
+```
+
+### Voir les positions et ordres
+
+```bash
+# Positions ouvertes
+python cli/main.py broker positions ftmo_ctrader
+
+# Ordres pending
+python cli/main.py broker orders ftmo_ctrader
+```
+
+### Configuration
+
+```bash
+# Voir la configuration actuelle
+python cli/main.py config show
+
+# Modifier un paramètre
+python cli/main.py config set general.risk_percent 0.5
+```
+
+## 🌐 Webhook Server
+
+### Démarrer le serveur
 
 ```bash
 # Mode développement
 python cli/main.py serve --port 5000
 
-# Mode production avec gunicorn
-gunicorn -w 4 -b 0.0.0.0:5000 webhook.server:app
+# Mode production (avec gunicorn)
+source venv/bin/activate
+gunicorn -w 2 -b 0.0.0.0:5000 webhook.server:app
 ```
 
-### 3. Configurer TradingView
+### Endpoints
 
-1. Ouvrez l'indicateur Pine Script (`pine/envolees_webhook.pine`)
-2. Créez une alerte sur l'indicateur
-3. Webhook URL : `http://votre-serveur:5000/webhook?token=VOTRE_TOKEN_SECRET`
-4. Le message JSON est généré automatiquement par le script
+| Endpoint | Méthode | Description |
+|----------|---------|-------------|
+| `/webhook` | POST | Recevoir les alertes TradingView |
+| `/webhook/test` | POST | Tester le parsing d'une alerte |
+| `/health` | GET | Health check |
+| `/status` | GET | Statut du système |
 
-### 4. Nettoyage des ordres expirés
+### Sécurité
 
-TradeLocker ne supporte pas l'expiration native des ordres. Configurez un cron :
-
-```bash
-# Toutes les 15 minutes
-*/15 * * * * cd /path/to/trading-automation && venv/bin/python cli/main.py cleanup
-```
-
-Ou manuellement :
-
-```bash
-python cli/main.py cleanup
-```
-
-## 🖥️ Commandes CLI
-
-```bash
-# Configuration
-python cli/main.py config show      # Afficher la config
-python cli/main.py config validate  # Valider la config
-
-# Brokers
-python cli/main.py broker list              # Liste des brokers
-python cli/main.py broker test <broker_id>  # Tester connexion
-python cli/main.py broker symbols <id>      # Lister symboles
-python cli/main.py broker orders <id>       # Ordres en attente
-python cli/main.py broker positions <id>    # Positions ouvertes
-
-# Ordres
-python cli/main.py order place <broker> <symbol> <side> --entry X --sl Y --tp Z
-python cli/main.py order cancel <broker> <order_id>
-
-# Serveur
-python cli/main.py serve --port 5000
-
-# Nettoyage
-python cli/main.py cleanup
-```
-
-## 📝 Format du message TradingView
-
-Le script Pine envoie un JSON comme celui-ci :
+Configurer un token secret dans `settings.json` :
 
 ```json
-{
-  "symbol": "EURUSD",
-  "side": "LONG",
-  "order_type": "LIMIT",
-  "entry": 1.0850,
-  "sl": 1.0800,
-  "tp": 1.0950,
-  "validity_bars": 1,
-  "atr": 0.0050,
-  "timeframe": "240"
+"webhook": {
+  "secret_token": "YOUR_SECRET_TOKEN",
+  "allowed_ips": []
 }
 ```
 
-## 🔒 Sécurité
+URL du webhook : `http://your-server:5000/webhook?token=YOUR_SECRET_TOKEN`
 
-- **Token secret** : Configurez un token aléatoire dans `webhook.secret_token`
-- **IP whitelist** : Ajoutez les IPs TradingView dans `webhook.allowed_ips`
-- **HTTPS** : Utilisez un reverse proxy (nginx) avec SSL en production
+## 📊 Format des Alertes TradingView
 
-IPs TradingView :
-- 52.89.214.238
-- 34.212.75.30
-- 54.218.53.128
-- 52.32.178.7
+### Format JSON (recommandé)
 
-## 📊 Calcul de la taille de position
+```json
+{
+  "symbol": "{{ticker}}",
+  "action": "{{strategy.order.action}}",
+  "price": {{strategy.order.price}},
+  "sl": {{plot("SL")}},
+  "tp": {{plot("TP")}},
+  "fvg_top": {{plot("FVG_TOP")}},
+  "fvg_bottom": {{plot("FVG_BOTTOM")}},
+  "timeframe": "240",
+  "strategy": "envolees"
+}
+```
+
+### Champs
+
+| Champ | Description | Exemple |
+|-------|-------------|---------|
+| `symbol` | Symbole de l'instrument | `EURUSD`, `XAUUSD` |
+| `action` | Direction | `buy` ou `sell` |
+| `price` | Prix d'entrée (ordre limite) | `1.0850` |
+| `sl` | Stop Loss | `1.0800` |
+| `tp` | Take Profit | `1.0950` |
+| `fvg_top` | Haut du FVG | `1.0860` |
+| `fvg_bottom` | Bas du FVG | `1.0840` |
+
+## 📁 Structure du Projet
 
 ```
-risk_amount = balance × risk_percent
-sl_pips = |entry - sl| / pip_value
-lots = risk_amount / (sl_pips × pip_value_per_lot × lot_size)
+trading-automation/
+├── brokers/
+│   ├── base.py           # Classes de base
+│   ├── ctrader.py        # Connecteur cTrader (FTMO)
+│   └── tradelocker.py    # Connecteur TradeLocker (GFT)
+├── cli/
+│   └── main.py           # Interface ligne de commande
+├── config/
+│   ├── __init__.py       # Chargement de la configuration
+│   ├── settings.json     # Configuration (créé par vous)
+│   └── settings.example.json
+├── pine/
+│   └── envolees_webhook.pine  # Script Pine avec alertes
+├── services/
+│   ├── order_placer.py   # Logique de placement d'ordres
+│   └── order_cleaner.py  # Nettoyage des ordres expirés
+├── tests/
+│   ├── test_ctrader.py
+│   ├── test_tradelocker.py
+│   └── test_webhook.py
+├── utils/
+│   └── notifications.py  # Système de notifications
+├── webhook/
+│   └── server.py         # Serveur Flask
+├── requirements.txt
+├── setup.sh
+└── README.md
 ```
 
-Avec clamp entre `min_lot` et `max_lot` configurés par instrument.
+## 🚀 Déploiement Production
 
-## 🧪 Tests
+### Avec systemd
+
+Créer `/etc/systemd/system/trading-webhook.service` :
+
+```ini
+[Unit]
+Description=Trading Webhook Server
+After=network.target
+
+[Service]
+Type=simple
+User=your_user
+WorkingDirectory=/home/your_user/dev/envolees-auto
+Environment=PATH=/home/your_user/dev/envolees-auto/venv/bin
+ExecStart=/home/your_user/dev/envolees-auto/venv/bin/gunicorn -w 2 -b 0.0.0.0:5000 webhook.server:app
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-# Test connexion cTrader
-CT_CLIENT_ID=xxx CT_CLIENT_SECRET=xxx CT_ACCESS_TOKEN=xxx \
-  python tests/test_ctrader.py
-
-# Test connexion TradeLocker  
-TL_EMAIL=xxx TL_PASSWORD=xxx TL_SERVER=GFTTL \
-  python tests/test_tradelocker.py
-
-# Test webhook local
-python tests/test_webhook.py --test-only
+sudo systemctl enable trading-webhook
+sudo systemctl start trading-webhook
+sudo systemctl status trading-webhook
 ```
 
-## 📈 Gestion des chandelles 4H (alignée TradingView)
+### Nettoyage automatique des ordres (cron)
 
-Le système de nettoyage reproduit exactement la logique TradingView :
+```bash
+crontab -e
+```
 
-- **Crypto (24x7)** : Phase 0, chandelles à 00:00, 04:00, 08:00...
-- **Forex/Indices (24x5)** : Phase -120, chandelles à 22:00, 02:00, 06:00...
-- **Actions US (RTH)** : Phase 150, chandelles à 02:30, 06:30, 10:30...
+Ajouter :
+```
+*/15 * * * * cd /home/your_user/dev/envolees-auto && venv/bin/python cli/main.py cleanup
+```
 
-Les weekends sont exclus pour 24x5 et RTH.
+## 🔧 Troubleshooting
 
-## 🐛 Dépannage
+### "pydantic import error"
 
-### "Symbol not found"
-Vérifiez le mapping dans `instruments_mapping` de chaque broker.
+Vous n'avez pas activé le venv :
+```bash
+source venv/bin/activate
+```
 
-### "Connection timeout" (cTrader)
-Le reactor Twisted peut nécessiter plus de temps. Augmentez le timeout.
+### "Token refresh error"
 
-### "Order failed" (TradeLocker)
-Vérifiez que l'instrument est tradable et que les prix sont valides.
+Le refresh_token est à usage unique. Si vous avez utilisé un ancien token :
+1. Régénérez un nouveau couple access_token/refresh_token sur openapi.ctrader.com
+2. Mettez à jour `settings.json`
 
-### Les ordres ne s'annulent pas
-Vérifiez que `created_time` est bien renseigné dans les ordres.
+### "Cannot set account_id to None"
 
-## 📄 Licence
+Le `account_id` n'est pas configuré. Lancez `broker test` pour voir vos comptes et ajoutez l'ID dans la config.
 
-MIT - Utilisation libre pour usage personnel et commercial.
+### TradeLocker "0 instruments"
 
-## 👤 Auteur
+Vérifiez que vous utilisez le bon `account_id` (compte actif). Lancez `broker test` pour voir la liste des comptes.
 
-Développé pour FTMO et Goat Funded Trader prop trading.
+### Ordres non placés
+
+1. Vérifiez les logs du webhook server
+2. Vérifiez que le symbole existe : `broker symbols <broker> --search SYMBOL`
+3. Vérifiez le mapping dans `instruments_mapping` si les noms diffèrent
+
+## 📝 Notes
+
+- Les tokens cTrader expirent après ~30 jours mais sont rafraîchis automatiquement
+- Le refresh_token cTrader est à **usage unique** - il est sauvegardé automatiquement après chaque refresh
+- Testez toujours en démo avant de passer en live
+- Les fichiers `config/settings.json` contiennent des credentials sensibles - ne les commitez jamais
+
+## 📄 License
+
+Usage personnel uniquement.
