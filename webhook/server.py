@@ -231,8 +231,8 @@ def webhook():
             "results": {
                 broker_id: {
                     "success": result.success,
-                    "order_id": result.order_id,
-                    "message": result.message
+                    "order_id": result.order_result.order_id if result.order_result else None,
+                    "message": result.order_result.message if result.order_result else result.error
                 }
                 for broker_id, result in results.items()
             },

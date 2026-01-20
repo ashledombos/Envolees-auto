@@ -310,14 +310,20 @@ class TradeLockerBroker(BaseBroker):
                 'quantity': order.volume,
                 'side': tl_side,
                 'type_': tl_type,
-                'stop_loss': order.stop_loss,
-                'take_profit': order.take_profit,
             }
             
             # Add price and validity for non-market orders
             if tl_type != 'market':
                 order_params['price'] = order.entry_price
                 order_params['validity'] = 'GTC'  # Good Till Cancelled
+            
+            # Add SL/TP with absolute price type
+            if order.stop_loss:
+                order_params['stop_loss'] = order.stop_loss
+                order_params['stop_loss_type'] = 'absolute'
+            if order.take_profit:
+                order_params['take_profit'] = order.take_profit
+                order_params['take_profit_type'] = 'absolute'
             
             result = self._api.create_order(**order_params)
             
