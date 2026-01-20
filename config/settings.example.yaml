@@ -1,0 +1,314 @@
+# =============================================================================
+# Trading Automation - Configuration
+# =============================================================================
+# Copier ce fichier vers settings.yaml et remplir vos credentials
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# PARAMÈTRES GÉNÉRAUX
+# -----------------------------------------------------------------------------
+general:
+  # Risque par trade (% du capital/équité)
+  risk_percent: 0.5
+  
+  # Utiliser l'équité (true) ou la balance (false) pour le calcul de risque
+  use_equity: true
+  
+  # Ratio Risk/Reward par défaut si non fourni dans l'alerte
+  default_rr_ratio: 2.5
+  
+  # Expiration des ordres limites (en nombre de bougies)
+  order_timeout_candles: 4
+  
+  # Timeframe des bougies en minutes (240 = H4)
+  candle_timeframe_minutes: 240
+
+# -----------------------------------------------------------------------------
+# EXÉCUTION DES ORDRES
+# -----------------------------------------------------------------------------
+execution:
+  # Délai aléatoire entre chaque broker (évite détection copy-trading)
+  delay_between_brokers:
+    enabled: true
+    min_ms: 500    # Minimum 500ms
+    max_ms: 3000   # Maximum 3 secondes
+  
+  # Ordre d'exécution des brokers (si non défini, ordre alphabétique)
+  # broker_order:
+  #   - ftmo_ctrader
+  #   - gft_compte1
+
+# -----------------------------------------------------------------------------
+# FILTRES PRÉ-PLACEMENT (Protection des comptes)
+# -----------------------------------------------------------------------------
+filters:
+  # Marge minimum requise (% de marge libre)
+  min_margin_percent: 30
+  
+  # Buffer avant limite de drawdown daily (%)
+  # Ex: si prop firm = 5% max, mettre 4% ici pour avoir 1% de marge
+  max_daily_drawdown_percent: 4.0
+  
+  # Buffer avant limite de drawdown total (%)
+  max_total_drawdown_percent: 9.0
+  
+  # Nombre maximum de positions ouvertes par compte
+  max_open_positions: 5
+  
+  # Nombre maximum d'ordres pending par compte
+  max_pending_orders: 10
+  
+  # Interdire doublon: pas d'ordre si déjà un pending sur même instrument
+  prevent_duplicate_orders: true
+
+# -----------------------------------------------------------------------------
+# WEBHOOK SERVER
+# -----------------------------------------------------------------------------
+webhook:
+  host: "0.0.0.0"
+  port: 5000
+  
+  # Token secret pour authentifier les requêtes TradingView
+  # URL: http://server:5000/webhook?token=VOTRE_TOKEN
+  secret_token: "CHANGEZ_MOI_token_secret_32_chars"
+  
+  # Liste d'IPs autorisées (vide = toutes acceptées)
+  # TradingView IPs: 52.89.214.238, 34.212.75.30, 54.218.53.128, 52.32.178.7
+  allowed_ips: []
+
+# -----------------------------------------------------------------------------
+# BROKERS / COMPTES
+# -----------------------------------------------------------------------------
+brokers:
+  # ---- FTMO (cTrader) ----
+  ftmo_ctrader:
+    enabled: true
+    type: ctrader
+    name: "FTMO Challenge"
+    is_demo: true
+    
+    # Credentials cTrader Open API
+    client_id: ""
+    client_secret: ""
+    access_token: ""
+    refresh_token: ""
+    auto_refresh_token: true
+    
+    # Account ID (laisser null pour auto-détection)
+    account_id: null
+    
+    # Limites spécifiques à ce compte (override les filtres globaux)
+    # limits:
+    #   max_daily_drawdown_percent: 5.0
+    #   max_open_positions: 3
+
+  # ---- GFT Compte 1 (TradeLocker) ----
+  gft_compte1:
+    enabled: true
+    type: tradelocker
+    name: "GFT Funded #1"
+    is_demo: true
+    
+    # URL spécifique GFT (ne pas changer)
+    base_url: "https://bsb.tradelocker.com"
+    
+    # Credentials
+    email: ""
+    password: ""
+    server: "GFTTL"
+    
+    # Account ID (null = premier compte actif)
+    account_id: 1711519
+
+  # ---- GFT Compte 2 (TradeLocker) ----
+  gft_compte2:
+    enabled: true
+    type: tradelocker
+    name: "GFT Funded #2"
+    is_demo: true
+    
+    base_url: "https://bsb.tradelocker.com"
+    email: ""
+    password: ""
+    server: "GFTTL"
+    account_id: 1711520
+
+# -----------------------------------------------------------------------------
+# INSTRUMENTS
+# -----------------------------------------------------------------------------
+# Mapping centralisé: nom TradingView -> nom par broker
+# Si un broker n'est pas listé, l'instrument est ignoré pour ce broker
+# -----------------------------------------------------------------------------
+instruments:
+  # Forex Majors
+  EURUSD:
+    ftmo_ctrader: "EURUSD"
+    gft_compte1: "EURUSD.X"
+    gft_compte2: "EURUSD.X"
+    pip_size: 0.0001        # Taille d'un pip
+    pip_value_per_lot: 10   # Valeur en USD d'1 pip pour 1 lot standard
+  
+  GBPUSD:
+    ftmo_ctrader: "GBPUSD"
+    gft_compte1: "GBPUSD.X"
+    gft_compte2: "GBPUSD.X"
+    pip_size: 0.0001
+    pip_value_per_lot: 10
+  
+  USDJPY:
+    ftmo_ctrader: "USDJPY"
+    gft_compte1: "USDJPY.X"
+    gft_compte2: "USDJPY.X"
+    pip_size: 0.01
+    pip_value_per_lot: null  # Calculé dynamiquement (besoin du prix)
+  
+  AUDUSD:
+    ftmo_ctrader: "AUDUSD"
+    gft_compte1: "AUDUSD.X"
+    gft_compte2: "AUDUSD.X"
+    pip_size: 0.0001
+    pip_value_per_lot: 10
+  
+  USDCAD:
+    ftmo_ctrader: "USDCAD"
+    gft_compte1: "USDCAD.X"
+    gft_compte2: "USDCAD.X"
+    pip_size: 0.0001
+    pip_value_per_lot: null  # Calculé dynamiquement
+  
+  USDCHF:
+    ftmo_ctrader: "USDCHF"
+    gft_compte1: "USDCHF.X"
+    gft_compte2: "USDCHF.X"
+    pip_size: 0.0001
+    pip_value_per_lot: null
+  
+  NZDUSD:
+    ftmo_ctrader: "NZDUSD"
+    gft_compte1: "NZDUSD.X"
+    gft_compte2: "NZDUSD.X"
+    pip_size: 0.0001
+    pip_value_per_lot: 10
+
+  # Forex Crosses
+  EURJPY:
+    ftmo_ctrader: "EURJPY"
+    gft_compte1: "EURJPY.X"
+    gft_compte2: "EURJPY.X"
+    pip_size: 0.01
+    pip_value_per_lot: null
+    quote_currency: "JPY"  # Pour calcul dynamique
+  
+  GBPJPY:
+    ftmo_ctrader: "GBPJPY"
+    gft_compte1: "GBPJPY.X"
+    gft_compte2: "GBPJPY.X"
+    pip_size: 0.01
+    pip_value_per_lot: null
+    quote_currency: "JPY"
+  
+  EURGBP:
+    ftmo_ctrader: "EURGBP"
+    gft_compte1: "EURGBP.X"
+    gft_compte2: "EURGBP.X"
+    pip_size: 0.0001
+    pip_value_per_lot: null
+    quote_currency: "GBP"
+  
+  AUDJPY:
+    ftmo_ctrader: "AUDJPY"
+    gft_compte1: "AUDJPY.X"
+    gft_compte2: "AUDJPY.X"
+    pip_size: 0.01
+    pip_value_per_lot: null
+    quote_currency: "JPY"
+
+  # Métaux
+  XAUUSD:
+    ftmo_ctrader: "XAUUSD"
+    gft_compte1: "XAUUSD.X"
+    gft_compte2: "XAUUSD.X"
+    pip_size: 0.01          # Gold: 1 pip = 0.01
+    pip_value_per_lot: 1    # $1 par 0.01 pour 1 lot (100 oz)
+    contract_size: 100
+  
+  XAGUSD:
+    ftmo_ctrader: "XAGUSD"
+    gft_compte1: "XAGUSD.X"
+    gft_compte2: "XAGUSD.X"
+    pip_size: 0.001
+    pip_value_per_lot: 5    # Silver: $5 par 0.001 pour 1 lot (5000 oz)
+    contract_size: 5000
+
+  # Indices
+  US30:
+    ftmo_ctrader: "US30"
+    gft_compte1: "US30.X"
+    gft_compte2: "US30.X"
+    pip_size: 1
+    pip_value_per_lot: 1
+  
+  US100:
+    ftmo_ctrader: "USTEC"
+    gft_compte1: "US100.X"
+    gft_compte2: "US100.X"
+    pip_size: 1
+    pip_value_per_lot: 1
+  
+  US500:
+    ftmo_ctrader: "US500"
+    gft_compte1: "US500.X"
+    gft_compte2: "US500.X"
+    pip_size: 0.1
+    pip_value_per_lot: 1
+  
+  GER40:
+    ftmo_ctrader: "DE40"
+    gft_compte1: "GER40.X"
+    gft_compte2: "GER40.X"
+    pip_size: 1
+    pip_value_per_lot: null
+    quote_currency: "EUR"
+  
+  JAP225:
+    ftmo_ctrader: "JP225"
+    gft_compte1: "JAP225.X"
+    gft_compte2: "JAP225.X"
+    pip_size: 1
+    pip_value_per_lot: null
+    quote_currency: "JPY"
+
+  # Crypto
+  BTCUSD:
+    ftmo_ctrader: "BTCUSD"
+    gft_compte1: "BTCUSD.X"
+    gft_compte2: "BTCUSD.X"
+    pip_size: 1
+    pip_value_per_lot: 1
+  
+  ETHUSD:
+    ftmo_ctrader: "ETHUSD"
+    gft_compte1: "ETHUSD.X"
+    gft_compte2: "ETHUSD.X"
+    pip_size: 0.1
+    pip_value_per_lot: 1
+
+# -----------------------------------------------------------------------------
+# NOTIFICATIONS (optionnel)
+# -----------------------------------------------------------------------------
+notifications:
+  enabled: false
+  
+  # Quand notifier
+  on_order_placed: true
+  on_order_filled: true
+  on_order_cancelled: true
+  on_order_error: true
+  on_filter_skip: true  # Notifier quand un compte est skip par un filtre
+  
+  # Canaux de notification (utilise Apprise)
+  # Docs: https://github.com/caronc/apprise
+  channels:
+    # - "tgram://BOT_TOKEN/CHAT_ID"
+    # - "discord://webhook_id/webhook_token"
+    # - "mailto://user:pass@gmail.com"

@@ -1,6 +1,8 @@
 # ===== CREDENTIALS & SECRETS =====
 # IMPORTANT: Ne jamais commiter les fichiers avec tokens/credentials
 config/settings.json
+config/settings.yaml
+config/settings.yml
 .env
 .env.*
 *.secret

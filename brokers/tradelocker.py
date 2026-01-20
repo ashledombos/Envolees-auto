@@ -43,7 +43,7 @@ class TradeLockerBroker(BaseBroker):
         # API state
         self._access_token: Optional[str] = None
         self._refresh_token: Optional[str] = None
-        self._base_url: Optional[str] = None
+        # _base_url is already set above from config
         self._account_id: Optional[str] = None
         self._acc_num: Optional[int] = None
         

@@ -168,40 +168,13 @@ class CTraderBroker(BaseBroker):
     def _save_tokens_to_config(self):
         """Save the new tokens to the config file"""
         try:
-            import json
-            import os
-            
-            # Trouver le fichier de config
-            config_paths = [
-                os.path.join(os.getcwd(), "config", "settings.json"),
-                os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "settings.json"),
-            ]
-            
-            config_path = None
-            for path in config_paths:
-                if os.path.exists(path):
-                    config_path = path
-                    break
-            
-            if not config_path:
-                print("[cTrader] ⚠️  Config file not found, tokens not saved")
-                return
-            
-            # Lire la config
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            
-            # Mettre à jour les tokens pour ce broker
-            if 'brokers' in config and self.broker_id in config['brokers']:
-                config['brokers'][self.broker_id]['access_token'] = self.access_token
-                config['brokers'][self.broker_id]['refresh_token'] = self.refresh_token
-                
-                # Sauvegarder
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=2)
-                
-                print(f"[cTrader] 💾 Tokens saved to {config_path}")
-            
+            from config import update_broker_tokens
+            update_broker_tokens(
+                broker_id=self.broker_id,
+                access_token=self.access_token,
+                refresh_token=self.refresh_token
+            )
+            print(f"[cTrader] 💾 Tokens saved to config")
         except Exception as e:
             print(f"[cTrader] ⚠️  Could not save tokens: {e}")
     

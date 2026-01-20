@@ -24,3 +24,6 @@ apprise>=1.6.0  # Multi-platform notifications (email, telegram, discord, etc.)
 # CLI
 click>=8.1.0
 rich>=13.0.0  # Pretty CLI output
+
+# Configuration
+PyYAML>=6.0.0

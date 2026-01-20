@@ -511,6 +511,237 @@ def cleanup(broker, dry_run):
         cleaner.disconnect()
 
 
+# ============ SIGNAL SIMULATION COMMANDS ============
+
+@cli.group()
+def signal():
+    """Signal testing and simulation"""
+    pass
+
+
+@signal.command("simulate")
+@click.option("--symbol", "-s", required=True, help="Trading symbol (e.g., EURUSD)")
+@click.option("--side", type=click.Choice(["buy", "sell", "long", "short"]), required=True, help="Trade direction")
+@click.option("--entry", "-e", type=float, required=True, help="Entry price")
+@click.option("--sl", type=float, required=True, help="Stop loss price")
+@click.option("--tp", type=float, help="Take profit price (optional)")
+@click.option("--broker", "-b", multiple=True, help="Specific broker(s) to test (can be used multiple times)")
+@click.option("--dry-run", is_flag=True, default=True, help="Simulate without placing real orders (default)")
+@click.option("--live", is_flag=True, help="Actually place the orders (CAUTION!)")
+def signal_simulate(symbol, side, entry, sl, tp, broker, dry_run, live):
+    """
+    Simulate a TradingView signal on all or specific brokers.
+    
+    Examples:
+    
+      # Dry run on all brokers
+      signal simulate -s EURUSD --side buy -e 1.0850 --sl 1.0800 --tp 1.0950
+      
+      # Dry run on specific broker
+      signal simulate -s XAUUSD --side sell -e 2650 --sl 2670 --tp 2610 -b ftmo_ctrader
+      
+      # LIVE order (be careful!)
+      signal simulate -s EURUSD --side buy -e 1.0850 --sl 1.0800 --live
+    """
+    from services.order_placer import OrderPlacerSync, SignalData
+    
+    # Calculate TP if not provided (use default RR)
+    cfg = get_config()
+    if tp is None:
+        risk = abs(entry - sl)
+        rr = cfg.general.default_rr_ratio
+        if side.lower() in ["buy", "long"]:
+            tp = entry + (risk * rr)
+        else:
+            tp = entry - (risk * rr)
+    
+    # Create signal
+    signal_data = SignalData(
+        symbol=symbol.upper(),
+        side=side.upper(),
+        entry_price=entry,
+        stop_loss=sl,
+        take_profit=tp,
+        order_type="LIMIT",
+        validity_bars=cfg.general.order_timeout_candles,
+        timeframe=f"M{cfg.general.candle_timeframe_minutes}"
+    )
+    
+    is_dry_run = not live
+    
+    # Show signal info
+    console.print(Panel(f"[bold]{'🧪 DRY RUN' if is_dry_run else '🔴 LIVE ORDER'} - Signal Simulation[/bold]"))
+    
+    table = Table(title="Signal Details")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", style="green")
+    
+    table.add_row("Symbol", signal_data.symbol)
+    table.add_row("Side", signal_data.side)
+    table.add_row("Entry", f"{signal_data.entry_price}")
+    table.add_row("Stop Loss", f"{signal_data.stop_loss}")
+    table.add_row("Take Profit", f"{signal_data.take_profit}")
+    table.add_row("Risk (pips)", f"{signal_data.calculate_risk_pips():.1f}")
+    
+    console.print(table)
+    
+    if live:
+        if not click.confirm("⚠️  This will place REAL orders. Continue?"):
+            console.print("[yellow]Cancelled.[/yellow]")
+            return
+    
+    # Execute
+    placer = OrderPlacerSync()
+    
+    try:
+        console.print("\n[bold]Connecting to brokers...[/bold]")
+        if not placer.connect():
+            console.print("[red]Failed to connect to all brokers[/red]")
+            return
+        
+        target_brokers = list(broker) if broker else None
+        
+        console.print(f"\n[bold]{'Simulating' if is_dry_run else 'Placing'} orders...[/bold]\n")
+        results = placer.place_signal(signal_data, brokers=target_brokers, dry_run=is_dry_run)
+        
+        # Results table
+        table = Table(title="Results")
+        table.add_column("Broker", style="cyan")
+        table.add_column("Status")
+        table.add_column("Lots")
+        table.add_column("Risk $")
+        table.add_column("Message")
+        
+        for broker_id, result in results.items():
+            if result.success:
+                status = "[green]✅ Success[/green]"
+                lots = f"{result.position_size.lots:.2f}" if result.position_size else "-"
+                risk = f"${result.position_size.risk_amount:.2f}" if result.position_size else "-"
+                msg = result.order_result.message if result.order_result else ""
+            else:
+                status = "[red]❌ Failed[/red]"
+                lots = "-"
+                risk = "-"
+                if result.filter_result:
+                    msg = f"[yellow]Filter: {result.filter_result.message}[/yellow]"
+                else:
+                    msg = result.error or "Unknown error"
+            
+            table.add_row(result.broker_name, status, lots, risk, msg)
+        
+        console.print(table)
+        
+    finally:
+        placer.disconnect()
+
+
+@signal.command("check-filters")
+@click.option("--symbol", "-s", required=True, help="Trading symbol")
+@click.option("--side", type=click.Choice(["buy", "sell"]), default="buy", help="Trade direction")
+@click.option("--entry", "-e", type=float, default=1.0, help="Entry price")
+@click.option("--sl", type=float, default=0.99, help="Stop loss price")
+def signal_check_filters(symbol, side, entry, sl):
+    """
+    Check which brokers would accept a signal (without placing orders).
+    
+    Example:
+      signal check-filters -s EURUSD
+    """
+    from services.order_placer import OrderPlacerSync, SignalData
+    
+    signal_data = SignalData(
+        symbol=symbol.upper(),
+        side=side.upper(),
+        entry_price=entry,
+        stop_loss=sl,
+        take_profit=entry + abs(entry - sl) * 2
+    )
+    
+    console.print(Panel(f"[bold]Filter Check for {symbol}[/bold]"))
+    
+    placer = OrderPlacerSync()
+    
+    try:
+        if not placer.connect():
+            console.print("[red]Failed to connect[/red]")
+            return
+        
+        table = Table(title="Filter Results")
+        table.add_column("Broker", style="cyan")
+        table.add_column("Symbol Mapped")
+        table.add_column("Filter Status")
+        table.add_column("Details")
+        
+        cfg = get_config()
+        
+        for broker_id in placer.placer.brokers.keys():
+            broker = placer.placer.brokers[broker_id]
+            
+            # Check instrument mapping
+            broker_symbol = cfg.get_instrument_symbol(symbol.upper(), broker_id)
+            
+            # Check filters
+            result = placer.check_filters(broker_id, signal_data)
+            
+            if result.passed:
+                status = "[green]✅ PASS[/green]"
+            else:
+                status = f"[red]❌ {result.filter_result.value}[/red]"
+            
+            table.add_row(
+                broker.name,
+                broker_symbol or "[red]Not mapped[/red]",
+                status,
+                result.message
+            )
+        
+        console.print(table)
+        
+    finally:
+        placer.disconnect()
+
+
+@signal.command("list-instruments")
+def signal_list_instruments():
+    """Show all configured instruments and their broker mappings"""
+    cfg = get_config()
+    
+    if not cfg.instruments:
+        console.print("[yellow]No instruments configured in settings.yaml[/yellow]")
+        return
+    
+    # Get all broker IDs
+    broker_ids = list(cfg.brokers.keys())
+    
+    table = Table(title="Instrument Mappings")
+    table.add_column("TradingView", style="cyan")
+    
+    for broker_id in broker_ids:
+        broker_name = cfg.brokers[broker_id].get("name", broker_id)
+        table.add_column(broker_name)
+    
+    table.add_column("Pip Size")
+    table.add_column("Pip Value")
+    
+    for tv_symbol, instrument in cfg.instruments.items():
+        row = [tv_symbol]
+        
+        for broker_id in broker_ids:
+            broker_symbol = instrument.get(broker_id)
+            if broker_symbol:
+                row.append(f"[green]{broker_symbol}[/green]")
+            else:
+                row.append("[dim]-[/dim]")
+        
+        row.append(str(instrument.get("pip_size", "-")))
+        pip_val = instrument.get("pip_value_per_lot")
+        row.append(str(pip_val) if pip_val else "[dim]dynamic[/dim]")
+        
+        table.add_row(*row)
+    
+    console.print(table)
+
+
 # ============ SERVER COMMAND ============
 
 @cli.command("serve")

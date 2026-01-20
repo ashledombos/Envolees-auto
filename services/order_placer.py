@@ -1,22 +1,65 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Order placement service
-Handles order placement across multiple brokers with risk management
+Order placement service with pre-placement filters and risk management
+
+Features:
+- Pre-placement filters (margin, drawdown, duplicates)
+- Random delay between brokers
+- Centralized instrument mapping
+- Dynamic position sizing
 """
 
 import asyncio
+import random
+import time
 from datetime import datetime, timezone, timedelta
-from typing import Optional, List, Dict, Any, Tuple
-from dataclasses import dataclass
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, field
+from enum import Enum
 
 from brokers import (
     create_broker, create_all_brokers,
     BaseBroker, OrderRequest, OrderResult,
     OrderSide, OrderType, AccountInfo
 )
+from services.position_sizer import calculate_position_size, PositionSize
 from utils.notifications import get_notification_service
 from config import get_config, AppConfig
+
+
+class FilterResult(Enum):
+    """Result of pre-placement filter check"""
+    PASSED = "passed"
+    INSTRUMENT_NOT_AVAILABLE = "instrument_not_available"
+    MARGIN_INSUFFICIENT = "margin_insufficient"
+    DAILY_DRAWDOWN_LIMIT = "daily_drawdown_limit"
+    TOTAL_DRAWDOWN_LIMIT = "total_drawdown_limit"
+    MAX_POSITIONS_REACHED = "max_positions_reached"
+    MAX_PENDING_ORDERS = "max_pending_orders"
+    DUPLICATE_ORDER = "duplicate_order"
+    CONNECTION_ERROR = "connection_error"
+
+
+@dataclass
+class FilterCheckResult:
+    """Detailed result of filter check"""
+    passed: bool
+    filter_result: FilterResult
+    message: str
+    details: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PlacementResult:
+    """Result of order placement attempt on one broker"""
+    broker_id: str
+    broker_name: str
+    success: bool
+    order_result: Optional[OrderResult] = None
+    filter_result: Optional[FilterCheckResult] = None
+    position_size: Optional[PositionSize] = None
+    error: Optional[str] = None
 
 
 @dataclass
@@ -64,36 +107,36 @@ class SignalData:
         else:
             return OrderType.LIMIT
     
-    def calculate_risk_pips(self) -> float:
+    def calculate_risk_pips(self, pip_size: float = 0.0001) -> float:
         """Calculate risk in pips (distance from entry to SL)"""
-        return abs(self.entry_price - self.stop_loss)
-    
-    def calculate_rr_ratio(self) -> float:
-        """Calculate risk/reward ratio"""
-        risk = self.calculate_risk_pips()
-        reward = abs(self.take_profit - self.entry_price)
-        return reward / risk if risk > 0 else 0
+        return abs(self.entry_price - self.stop_loss) / pip_size
     
     @classmethod
     def from_webhook(cls, data: dict) -> "SignalData":
         """Create SignalData from webhook payload"""
         return cls(
-            symbol=data.get("symbol", ""),
-            side=data.get("side", ""),
-            entry_price=float(data.get("entry", data.get("entry_price", 0))),
+            symbol=data.get("symbol", "").upper(),
+            side=data.get("side", data.get("action", "")),
+            entry_price=float(data.get("entry", data.get("entry_price", data.get("price", 0)))),
             stop_loss=float(data.get("sl", data.get("stop_loss", 0))),
             take_profit=float(data.get("tp", data.get("take_profit", 0))),
             order_type=data.get("order_type", "LIMIT"),
             validity_bars=int(data.get("validity_bars", data.get("validBars", 1))),
             atr=float(data.get("atr")) if data.get("atr") else None,
             timeframe=data.get("timeframe", "H4"),
-            source=data.get("source", "tradingview"),
+            source=data.get("source", data.get("strategy", "tradingview")),
             raw_message=str(data)
         )
 
 
 class OrderPlacer:
-    """Service for placing orders across multiple brokers"""
+    """
+    Service for placing orders across multiple brokers with:
+    - Pre-placement filters (margin, drawdown, duplicates)
+    - Random delay between brokers
+    - Centralized instrument mapping
+    - Dynamic position sizing
+    """
     
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or get_config()
@@ -136,132 +179,216 @@ class OrderPlacer:
                 pass
         self._connected = False
     
-    def calculate_position_size(
-        self,
-        account_balance: float,
-        risk_percent: float,
-        entry_price: float,
-        stop_loss: float,
-        pip_value: float = 0.0001,
-        lot_size: float = 100000,
-        min_lot: float = 0.01,
-        max_lot: float = 100
-    ) -> float:
-        """
-        Calculate position size based on risk management.
-        
-        Args:
-            account_balance: Current account balance
-            risk_percent: Risk percentage (e.g., 0.5 for 0.5%)
-            entry_price: Entry price
-            stop_loss: Stop loss price
-            pip_value: Value of one pip (e.g., 0.0001 for most forex pairs)
-            lot_size: Contract size (e.g., 100000 for standard forex lot)
-            min_lot: Minimum lot size
-            max_lot: Maximum lot size
-        
-        Returns:
-            Position size in lots
-        """
-        # Risk amount in account currency
-        risk_amount = account_balance * (risk_percent / 100)
-        
-        # Distance to SL in pips
-        sl_distance = abs(entry_price - stop_loss)
-        sl_pips = sl_distance / pip_value
-        
-        # Value per pip per lot
-        pip_value_per_lot = lot_size * pip_value
-        
-        # Calculate lots
-        if sl_pips > 0:
-            lots = risk_amount / (sl_pips * pip_value_per_lot)
-        else:
-            lots = min_lot
-        
-        # Clamp to min/max
-        lots = max(min_lot, min(lots, max_lot))
-        
-        # Round to 2 decimal places
-        lots = round(lots, 2)
-        
-        return lots
+    # =========================================================================
+    # Pre-Placement Filters
+    # =========================================================================
     
-    def calculate_expiry_timestamp(
+    async def check_filters(
         self,
-        validity_bars: int,
-        timeframe_minutes: int = 240
-    ) -> int:
-        """Calculate order expiry timestamp in milliseconds"""
-        now = datetime.now(timezone.utc)
-        expiry = now + timedelta(minutes=validity_bars * timeframe_minutes)
-        return int(expiry.timestamp() * 1000)
+        broker_id: str,
+        broker: BaseBroker,
+        signal: SignalData
+    ) -> FilterCheckResult:
+        """
+        Check all pre-placement filters for a broker.
+        
+        Returns FilterCheckResult indicating if order can be placed.
+        """
+        limits = self.config.get_broker_limits(broker_id)
+        
+        # 1. Check instrument availability
+        broker_symbol = self.config.get_instrument_symbol(signal.symbol, broker_id)
+        if not broker_symbol:
+            return FilterCheckResult(
+                passed=False,
+                filter_result=FilterResult.INSTRUMENT_NOT_AVAILABLE,
+                message=f"Instrument {signal.symbol} not available on {broker.name}",
+                details={"symbol": signal.symbol, "broker": broker_id}
+            )
+        
+        # Get account info
+        try:
+            account_info = await broker.get_account_info()
+            if not account_info:
+                return FilterCheckResult(
+                    passed=False,
+                    filter_result=FilterResult.CONNECTION_ERROR,
+                    message=f"Could not get account info from {broker.name}"
+                )
+        except Exception as e:
+            return FilterCheckResult(
+                passed=False,
+                filter_result=FilterResult.CONNECTION_ERROR,
+                message=f"Error getting account info: {e}"
+            )
+        
+        # 2. Check margin
+        if account_info.margin_free is not None and account_info.equity is not None:
+            margin_percent = (account_info.margin_free / account_info.equity * 100) if account_info.equity > 0 else 0
+            if margin_percent < limits.min_margin_percent:
+                return FilterCheckResult(
+                    passed=False,
+                    filter_result=FilterResult.MARGIN_INSUFFICIENT,
+                    message=f"Margin too low: {margin_percent:.1f}% < {limits.min_margin_percent}%",
+                    details={"margin_percent": margin_percent, "required": limits.min_margin_percent}
+                )
+        
+        # 3. Check positions count
+        try:
+            positions = await broker.get_open_positions()
+            if positions and len(positions) >= limits.max_open_positions:
+                return FilterCheckResult(
+                    passed=False,
+                    filter_result=FilterResult.MAX_POSITIONS_REACHED,
+                    message=f"Max positions reached: {len(positions)} >= {limits.max_open_positions}",
+                    details={"positions": len(positions), "max": limits.max_open_positions}
+                )
+        except Exception:
+            pass  # Continue if we can't get positions
+        
+        # 4. Check pending orders count
+        try:
+            pending = await broker.get_pending_orders()
+            if pending:
+                if len(pending) >= limits.max_pending_orders:
+                    return FilterCheckResult(
+                        passed=False,
+                        filter_result=FilterResult.MAX_PENDING_ORDERS,
+                        message=f"Max pending orders reached: {len(pending)} >= {limits.max_pending_orders}",
+                        details={"pending": len(pending), "max": limits.max_pending_orders}
+                    )
+                
+                # 5. Check duplicates
+                if limits.prevent_duplicate_orders:
+                    for order in pending:
+                        if order.symbol and signal.symbol.upper() in order.symbol.upper():
+                            return FilterCheckResult(
+                                passed=False,
+                                filter_result=FilterResult.DUPLICATE_ORDER,
+                                message=f"Duplicate: pending order already exists for {signal.symbol}",
+                                details={"existing_order_id": order.order_id}
+                            )
+        except Exception:
+            pass  # Continue if we can't get pending orders
+        
+        # All filters passed
+        return FilterCheckResult(
+            passed=True,
+            filter_result=FilterResult.PASSED,
+            message="All filters passed"
+        )
+    
+    # =========================================================================
+    # Order Placement
+    # =========================================================================
     
     async def place_signal(
         self,
         signal: SignalData,
-        brokers: Optional[List[str]] = None
-    ) -> Dict[str, OrderResult]:
+        brokers: Optional[List[str]] = None,
+        dry_run: bool = False
+    ) -> Dict[str, PlacementResult]:
         """
         Place orders for a signal across specified brokers.
         
         Args:
             signal: Signal data from TradingView
             brokers: List of broker IDs to use (None = all enabled)
+            dry_run: If True, only simulate without placing real orders
         
         Returns:
-            Dict of broker_id -> OrderResult
+            Dict of broker_id -> PlacementResult
         """
         if not self._connected:
             await self.connect()
         
         results = {}
-        target_brokers = brokers or list(self.brokers.keys())
-        
         notification_service = get_notification_service()
         
-        for broker_id in target_brokers:
+        # Determine broker order
+        target_brokers = brokers or list(self.brokers.keys())
+        
+        # Use configured order if available
+        if self.config.execution.broker_order:
+            target_brokers = [
+                b for b in self.config.execution.broker_order 
+                if b in target_brokers
+            ]
+        
+        # Get delay settings
+        delay_config = self.config.execution.delay_between_brokers
+        
+        for i, broker_id in enumerate(target_brokers):
             if broker_id not in self.brokers:
-                results[broker_id] = OrderResult(
+                results[broker_id] = PlacementResult(
+                    broker_id=broker_id,
+                    broker_name=broker_id,
                     success=False,
-                    message=f"Broker {broker_id} not found"
+                    error=f"Broker {broker_id} not found"
                 )
                 continue
             
             broker = self.brokers[broker_id]
             
+            # Add random delay (except for first broker)
+            if i > 0 and delay_config.enabled:
+                delay_ms = random.randint(delay_config.min_ms, delay_config.max_ms)
+                print(f"[OrderPlacer] Waiting {delay_ms}ms before {broker.name}...")
+                await asyncio.sleep(delay_ms / 1000)
+            
+            # Check filters
+            filter_check = await self.check_filters(broker_id, broker, signal)
+            
+            if not filter_check.passed:
+                print(f"[OrderPlacer] ⏭️  Skipping {broker.name}: {filter_check.message}")
+                results[broker_id] = PlacementResult(
+                    broker_id=broker_id,
+                    broker_name=broker.name,
+                    success=False,
+                    filter_result=filter_check
+                )
+                
+                if self.config.notifications.on_filter_skip:
+                    notification_service.notify(
+                        f"⏭️ {broker.name}: Skipped {signal.symbol}",
+                        filter_check.message
+                    )
+                continue
+            
+            # Place order
             try:
-                result = await self._place_on_broker(broker, signal)
+                result = await self._place_on_broker(broker, broker_id, signal, dry_run)
                 results[broker_id] = result
                 
-                # Send notification
                 if result.success:
                     notification_service.notify_order_placed(
                         broker=broker.name,
                         symbol=signal.symbol,
                         side=signal.side,
                         order_type=signal.order_type,
-                        volume=result.broker_response.get("volume", 0) if result.broker_response else 0,
+                        volume=result.position_size.lots if result.position_size else 0,
                         entry_price=signal.entry_price,
                         stop_loss=signal.stop_loss,
                         take_profit=signal.take_profit,
-                        order_id=result.order_id or ""
+                        order_id=result.order_result.order_id if result.order_result else ""
                     )
                 else:
                     notification_service.notify_error(
                         broker=broker.name,
-                        message=f"Failed to place {signal.side} on {signal.symbol}",
-                        error_details=result.message
+                        message=f"Failed {signal.side} {signal.symbol}",
+                        error_details=result.error or ""
                     )
                     
             except Exception as e:
-                results[broker_id] = OrderResult(
+                results[broker_id] = PlacementResult(
+                    broker_id=broker_id,
+                    broker_name=broker.name,
                     success=False,
-                    message=str(e)
+                    error=str(e)
                 )
                 notification_service.notify_error(
                     broker=broker.name,
-                    message=f"Error placing order on {signal.symbol}",
+                    message=f"Error on {signal.symbol}",
                     error_details=str(e)
                 )
         
@@ -270,55 +397,56 @@ class OrderPlacer:
     async def _place_on_broker(
         self,
         broker: BaseBroker,
-        signal: SignalData
-    ) -> OrderResult:
+        broker_id: str,
+        signal: SignalData,
+        dry_run: bool = False
+    ) -> PlacementResult:
         """Place order on a single broker"""
         
-        # Check if symbol is available
-        broker_symbol = broker.map_symbol(signal.symbol)
-        if not broker_symbol:
-            return OrderResult(
-                success=False,
-                message=f"Symbol {signal.symbol} not mapped for {broker.name}"
-            )
+        # Get broker-specific symbol
+        broker_symbol = self.config.get_instrument_symbol(signal.symbol, broker_id)
         
         # Get account info for position sizing
         account_info = await broker.get_account_info()
         if not account_info:
-            return OrderResult(
+            return PlacementResult(
+                broker_id=broker_id,
+                broker_name=broker.name,
                 success=False,
-                message=f"Could not get account info from {broker.name}"
+                error="Could not get account info"
             )
         
         # Get instrument config
-        instrument_config = self.config.get_instrument_config(signal.symbol)
+        instrument_config = self.config.get_instrument_config(signal.symbol) or {}
+        
+        # Determine account value (equity or balance)
+        account_value = account_info.equity if self.config.general.use_equity else account_info.balance
+        if not account_value or account_value <= 0:
+            account_value = account_info.balance or 10000  # Fallback
         
         # Calculate position size
-        risk_percent = self.config.general.risk_percent
+        position_size = calculate_position_size(
+            instrument_config=instrument_config,
+            account_value=account_value,
+            risk_percent=self.config.general.risk_percent,
+            entry_price=signal.entry_price,
+            sl_price=signal.stop_loss
+        )
         
-        if instrument_config:
-            volume = self.calculate_position_size(
-                account_balance=account_info.balance,
-                risk_percent=risk_percent,
-                entry_price=signal.entry_price,
-                stop_loss=signal.stop_loss,
-                pip_value=instrument_config.pip_value,
-                lot_size=instrument_config.lot_size,
-                min_lot=instrument_config.min_lot,
-                max_lot=instrument_config.max_lot
-            )
-        else:
-            # Default calculation
-            volume = self.calculate_position_size(
-                account_balance=account_info.balance,
-                risk_percent=risk_percent,
-                entry_price=signal.entry_price,
-                stop_loss=signal.stop_loss
+        print(f"[OrderPlacer] {broker.name}: {position_size.details}")
+        
+        if position_size.lots <= 0:
+            return PlacementResult(
+                broker_id=broker_id,
+                broker_name=broker.name,
+                success=False,
+                position_size=position_size,
+                error="Invalid position size calculated"
             )
         
         # Calculate expiry
         timeframe_minutes = self.config.general.candle_timeframe_minutes
-        expiry_ms = self.calculate_expiry_timestamp(
+        expiry_ms = self._calculate_expiry_timestamp(
             signal.validity_bars,
             timeframe_minutes
         )
@@ -328,7 +456,7 @@ class OrderPlacer:
             symbol=signal.symbol,
             side=signal.order_side,
             order_type=signal.broker_order_type,
-            volume=volume,
+            volume=position_size.lots,
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
@@ -337,23 +465,49 @@ class OrderPlacer:
             comment=f"Signal {signal.timeframe} {signal.side}"
         )
         
-        print(f"[OrderPlacer] Placing on {broker.name}: {signal.side} {volume} lots {signal.symbol} @ {signal.entry_price}")
-        print(f"              SL: {signal.stop_loss}, TP: {signal.take_profit}, Expiry: {expiry_ms}")
+        print(f"[OrderPlacer] {'[DRY RUN] ' if dry_run else ''}Placing on {broker.name}:")
+        print(f"              {signal.side} {position_size.lots} lots {broker_symbol} @ {signal.entry_price}")
+        print(f"              SL: {signal.stop_loss}, TP: {signal.take_profit}")
+        
+        if dry_run:
+            return PlacementResult(
+                broker_id=broker_id,
+                broker_name=broker.name,
+                success=True,
+                position_size=position_size,
+                order_result=OrderResult(
+                    success=True,
+                    message="[DRY RUN] Order would be placed"
+                )
+            )
         
         # Place order
         result = await broker.place_order(order)
         
-        # Add volume to result for notifications
-        if result.success:
-            if result.broker_response is None:
-                result.broker_response = {}
-            if isinstance(result.broker_response, dict):
-                result.broker_response["volume"] = volume
-        
-        return result
+        return PlacementResult(
+            broker_id=broker_id,
+            broker_name=broker.name,
+            success=result.success,
+            position_size=position_size,
+            order_result=result,
+            error=result.message if not result.success else None
+        )
+    
+    def _calculate_expiry_timestamp(
+        self,
+        validity_bars: int,
+        timeframe_minutes: int = 240
+    ) -> int:
+        """Calculate order expiry timestamp in milliseconds"""
+        now = datetime.now(timezone.utc)
+        expiry = now + timedelta(minutes=validity_bars * timeframe_minutes)
+        return int(expiry.timestamp() * 1000)
 
 
-# Synchronous wrapper for CLI
+# =============================================================================
+# Synchronous Wrapper
+# =============================================================================
+
 class OrderPlacerSync:
     """Synchronous wrapper for OrderPlacer"""
     
@@ -376,8 +530,29 @@ class OrderPlacerSync:
     def place_signal(
         self,
         signal: SignalData,
-        brokers: Optional[List[str]] = None
-    ) -> Dict[str, OrderResult]:
+        brokers: Optional[List[str]] = None,
+        dry_run: bool = False
+    ) -> Dict[str, PlacementResult]:
         return self._get_loop().run_until_complete(
-            self.placer.place_signal(signal, brokers)
+            self.placer.place_signal(signal, brokers, dry_run)
+        )
+    
+    def check_filters(
+        self,
+        broker_id: str,
+        signal: SignalData
+    ) -> FilterCheckResult:
+        """Check filters for a single broker"""
+        if broker_id not in self.placer.brokers:
+            return FilterCheckResult(
+                passed=False,
+                filter_result=FilterResult.CONNECTION_ERROR,
+                message=f"Broker {broker_id} not connected"
+            )
+        return self._get_loop().run_until_complete(
+            self.placer.check_filters(
+                broker_id,
+                self.placer.brokers[broker_id],
+                signal
+            )
         )
