@@ -389,39 +389,59 @@ class CTraderBroker(BaseBroker):
     
     def _process_order_response(self, payload, ptype: str):
         """Process order-related responses"""
+        # Debug: show what we received
+        print(f"[cTrader] DEBUG: Received {ptype}")
+        
         if "order_place" in self._pending_requests:
             future = self._pending_requests.pop("order_place")
             
-            # cTrader ExecutionEvent contains order.orderId, not just orderId
+            # Try multiple ways to extract order ID
             order_id = None
-            if hasattr(payload, "order") and hasattr(payload.order, "orderId"):
-                order_id = str(payload.order.orderId)
-            elif hasattr(payload, "orderId"):
-                order_id = str(payload.orderId)
             
-            if order_id:
+            # Method 1: payload.order.orderId (ExecutionEvent)
+            if hasattr(payload, "order") and hasattr(payload.order, "orderId"):
+                order_id = payload.order.orderId
+                print(f"[cTrader] DEBUG: Found order.orderId = {order_id}")
+            
+            # Method 2: payload.orderId directly
+            if not order_id and hasattr(payload, "orderId"):
+                order_id = payload.orderId
+                print(f"[cTrader] DEBUG: Found orderId = {order_id}")
+            
+            # Method 3: For market orders - position.positionId
+            if not order_id and hasattr(payload, "position"):
+                if hasattr(payload.position, "positionId"):
+                    order_id = payload.position.positionId
+                    print(f"[cTrader] DEBUG: Found position.positionId = {order_id}")
+            
+            # Method 4: Check deal for filled orders
+            if not order_id and hasattr(payload, "deal"):
+                if hasattr(payload.deal, "orderId"):
+                    order_id = payload.deal.orderId
+                    print(f"[cTrader] DEBUG: Found deal.orderId = {order_id}")
+            
+            if order_id and order_id != 0:
                 print(f"[cTrader] ✅ Order placed: {order_id}")
                 future.set_result(OrderResult(
                     success=True,
-                    order_id=order_id,
+                    order_id=str(order_id),
                     message="Order placed successfully",
                     broker_response=payload
                 ))
-            elif hasattr(payload, "position"):
-                pos_id = str(payload.position.positionId) if hasattr(payload.position, "positionId") else "0"
-                print(f"[cTrader] ✅ Order filled immediately, position: {pos_id}")
-                future.set_result(OrderResult(
-                    success=True,
-                    order_id=pos_id,
-                    message="Order filled immediately",
-                    broker_response=payload
-                ))
             else:
-                # Debug: log what we received
-                print(f"[cTrader] ⚠️ Order response type: {ptype}, attrs: {dir(payload)}")
+                # Log all available attributes for debugging
+                attrs = [a for a in dir(payload) if not a.startswith('_')]
+                print(f"[cTrader] ⚠️ Could not extract order ID from {ptype}")
+                print(f"[cTrader] DEBUG: Available attrs: {attrs}")
+                if hasattr(payload, "order"):
+                    order_attrs = [a for a in dir(payload.order) if not a.startswith('_')]
+                    print(f"[cTrader] DEBUG: order attrs: {order_attrs}")
+                
+                # Still return success if we got a response (order likely placed)
                 future.set_result(OrderResult(
                     success=True,
-                    message=f"Response: {ptype}",
+                    order_id="pending",
+                    message=f"Order sent, response: {ptype}",
                     broker_response=payload
                 ))
         
