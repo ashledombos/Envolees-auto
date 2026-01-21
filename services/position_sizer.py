@@ -153,7 +153,7 @@ class PositionSizer:
         Cases:
         1. XXX/USD pairs: pip value = 10 USD (fixed)
         2. USD/XXX pairs: pip value = 10 / current_price
-        3. XXX/YYY pairs: pip value = 10 × (YYY/USD rate)
+        3. XXX/YYY pairs: pip value = 10 / (YYY_to_USD rate)
         
         For simplicity, if pip_value_per_lot is configured, use it.
         Otherwise, try to calculate dynamically.
@@ -177,21 +177,44 @@ class PositionSizer:
             return base_pip_value
         
         if quote_to_usd_rate is not None:
-            # XXX/YYY pair - convert YYY to USD
+            # XXX/YYY pair - convert YYY to USD using provided rate
             return base_pip_value * quote_to_usd_rate
         
-        # If we have current price and it's a USD/XXX pair
-        # (quote currency is not USD, but we can estimate)
-        # This is a rough approximation
-        if self.quote_currency in ["JPY", "CHF", "CAD"]:
-            # For pairs like USDJPY, pip value ≈ 10 / price
-            # For EURJPY, we'd need USDJPY rate, but approximate with entry
-            if current_price > 10:  # Likely a JPY pair
-                return base_pip_value / (current_price / 100)
+        # For USD/XXX pairs (like USDZAR, USDMXN, USDJPY, etc.)
+        # pip_value = base_pip_value / current_price
+        # This works because:
+        # - Position is in USD (base currency)
+        # - P&L is in quote currency (XXX)
+        # - We need to convert XXX back to USD: divide by current_price
+        
+        # Detect if current_price is "large" (likely JPY pair) or "normal"
+        # JPY pairs: price > 50 (like USDJPY = 150, EURJPY = 160)
+        # Other exotic: price > 1 (like USDZAR = 16, USDMXN = 17)
+        
+        if current_price > 1:
+            # This is likely a USD/XXX pair where XXX is not USD
+            # For USDZAR at 16.29: pip_value = 10 / 16.29 = 0.61 USD
+            # For USDJPY at 150: pip_value = 10 / 150 = 0.067 USD (but pip_size is 0.01!)
+            
+            # Adjust for JPY pairs where pip_size is 0.01 instead of 0.0001
+            if self.pip_size >= 0.01:
+                # JPY pair - pip is 0.01, base_pip_value is already 1000
+                # pip_value = 1000 / 150 ≈ 6.67 USD per pip per lot
+                return base_pip_value / current_price
             else:
+                # Standard exotic pair (USDZAR, USDMXN, etc.)
+                # pip is 0.0001, base_pip_value is 10
+                # pip_value = 10 / 16.29 ≈ 0.61 USD per pip per lot
                 return base_pip_value / current_price
         
-        # Default fallback
+        # For cross pairs like EURJPY, GBPCHF, etc.
+        # We'd ideally need the XXX/USD rate, but estimate with current price
+        if current_price > 50:
+            # Likely a JPY cross (EURJPY, GBPJPY, etc.)
+            # Very rough approximation - not ideal
+            return base_pip_value / current_price
+        
+        # Default fallback - assume close to base_pip_value
         return base_pip_value
 
 
@@ -272,6 +295,33 @@ if __name__ == "__main__":
         risk_percent=0.5,
         entry_price=2650.00,
         sl_price=2640.00
+    )
+    print(f"   Result: {result.lots} lots")
+    print(f"   {result.details}")
+    
+    # Test 4: USDZAR (ZAR quote - exotic)
+    print("\n4. USDZAR - $97,000 account, 0.5% risk, ~567 pip SL")
+    config = {"pip_size": 0.0001, "quote_currency": "ZAR"}
+    result = calculate_position_size(
+        config,
+        account_value=97000,
+        risk_percent=0.5,
+        entry_price=16.29158,
+        sl_price=16.34826  # 566.68 pips
+    )
+    print(f"   Result: {result.lots} lots")
+    print(f"   {result.details}")
+    print(f"   Expected: ~1.4 lots (risk $485 / (567 pips × $0.61/pip/lot))")
+    
+    # Test 5: USDMXN (MXN quote - exotic)
+    print("\n5. USDMXN - $100,000 account, 0.5% risk, 500 pip SL")
+    config = {"pip_size": 0.0001, "quote_currency": "MXN"}
+    result = calculate_position_size(
+        config,
+        account_value=100000,
+        risk_percent=0.5,
+        entry_price=17.50,
+        sl_price=17.55  # 500 pips
     )
     print(f"   Result: {result.lots} lots")
     print(f"   {result.details}")
