@@ -9,6 +9,8 @@ import sys
 import json
 import asyncio
 import threading
+import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from typing import Optional
 from functools import wraps
@@ -23,7 +25,91 @@ from services.order_placer import OrderPlacer, SignalData
 from utils.notifications import get_notification_service, NotificationType, Notification
 
 
+# =============================================================================
+# LOGGING CONFIGURATION
+# =============================================================================
+
+def setup_logging(log_dir: str = None):
+    """Configure logging to file and console"""
+    if log_dir is None:
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+    
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Main log file (all messages)
+    main_handler = RotatingFileHandler(
+        os.path.join(log_dir, "envolees.log"),
+        maxBytes=10*1024*1024,  # 10 MB
+        backupCount=5
+    )
+    main_handler.setLevel(logging.INFO)
+    main_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    
+    # Error log file (errors only)
+    error_handler = RotatingFileHandler(
+        os.path.join(log_dir, "errors.log"),
+        maxBytes=5*1024*1024,  # 5 MB
+        backupCount=3
+    )
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(name)s: %(message)s\n%(pathname)s:%(lineno)d',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    
+    # Orders log file (order-specific events)
+    orders_handler = RotatingFileHandler(
+        os.path.join(log_dir, "orders.log"),
+        maxBytes=10*1024*1024,  # 10 MB
+        backupCount=10
+    )
+    orders_handler.setLevel(logging.INFO)
+    orders_handler.setFormatter(logging.Formatter(
+        '%(asctime)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%H:%M:%S'
+    ))
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(main_handler)
+    root_logger.addHandler(error_handler)
+    root_logger.addHandler(console_handler)
+    
+    # Orders logger (separate)
+    orders_logger = logging.getLogger('orders')
+    orders_logger.addHandler(orders_handler)
+    orders_logger.propagate = False  # Don't duplicate to main log
+    
+    # Reduce noise from libraries
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
+    logging.getLogger('tradelocker').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    
+    return log_dir
+
+
+# Initialize logging
+LOG_DIR = setup_logging()
+
+
 app = Flask(__name__)
+
+# Configure Flask logging
+app.logger.handlers = []  # Remove default handlers
+app.logger.addHandler(logging.getLogger().handlers[0])  # Use our handlers
+app.logger.setLevel(logging.INFO)
 
 # Global order placer instance
 _order_placer: Optional[OrderPlacer] = None
@@ -201,25 +287,47 @@ def webhook():
         if isinstance(brokers, str):
             brokers = [brokers]
         
-        # Place orders
-        placer = get_order_placer()
+        # Generate request ID for tracking
+        request_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:18]
         
-        # Run async operation
-        async def place():
-            return await placer.place_signal(signal, brokers)
+        # Process orders in background thread
+        def process_orders_background():
+            try:
+                placer = get_order_placer()
+                
+                global _event_loop
+                if _event_loop is None:
+                    _event_loop = asyncio.new_event_loop()
+                
+                asyncio.set_event_loop(_event_loop)
+                results = _event_loop.run_until_complete(placer.place_signal(signal, brokers))
+                
+                # Log results
+                success_count = sum(1 for r in results.values() if r.success)
+                total_count = len(results)
+                
+                app.logger.info(f"[{request_id}] Orders completed: {success_count}/{total_count} successful")
+                
+                for broker_id, result in results.items():
+                    if result.success:
+                        order_id = result.order_result.order_id if result.order_result else "N/A"
+                        app.logger.info(f"[{request_id}] ✅ {broker_id}: Order {order_id}")
+                    else:
+                        error = result.order_result.message if result.order_result else result.error
+                        app.logger.warning(f"[{request_id}] ❌ {broker_id}: {error}")
+                
+            except Exception as e:
+                app.logger.error(f"[{request_id}] Background processing error: {e}", exc_info=True)
         
-        global _event_loop
-        if _event_loop is None:
-            _event_loop = asyncio.new_event_loop()
+        # Start background thread
+        thread = threading.Thread(target=process_orders_background, daemon=True)
+        thread.start()
         
-        asyncio.set_event_loop(_event_loop)
-        results = _event_loop.run_until_complete(place())
-        
-        # Build response
-        success = any(r.success for r in results.values())
-        
+        # Respond immediately to TradingView
         response = {
-            "success": success,
+            "success": True,
+            "status": "accepted",
+            "request_id": request_id,
             "signal": {
                 "symbol": signal.symbol,
                 "side": signal.side,
@@ -228,20 +336,13 @@ def webhook():
                 "tp": signal.take_profit,
                 "rr_ratio": round(signal.calculate_rr_ratio(), 2)
             },
-            "results": {
-                broker_id: {
-                    "success": result.success,
-                    "order_id": result.order_result.order_id if result.order_result else None,
-                    "message": result.order_result.message if result.order_result else result.error
-                }
-                for broker_id, result in results.items()
-            },
+            "message": "Signal received, orders being placed in background",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
-        app.logger.info(f"Webhook processed: {json.dumps(response, default=str)}")
+        app.logger.info(f"[{request_id}] Signal accepted: {signal.symbol} {signal.side}")
         
-        return jsonify(response), 200 if success else 500
+        return jsonify(response), 202  # 202 Accepted
         
     except Exception as e:
         app.logger.error(f"Webhook error: {e}", exc_info=True)

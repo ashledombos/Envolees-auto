@@ -240,9 +240,29 @@ class TradeLockerBroker(BaseBroker):
             print(f"[TradeLocker] Error getting account info: {e}")
             return None
     
-    async def get_symbols(self) -> List[str]:
+    async def get_symbols(self) -> List[SymbolInfo]:
         """Get list of available symbols"""
-        return list(self._instruments_map.keys())
+        if self._instruments_df is None or self._instruments_df.empty:
+            return []
+        
+        symbols = []
+        for _, inst in self._instruments_df.iterrows():
+            inst_id = int(inst.get('tradableInstrumentId', 0))
+            inst_name = inst.get('name', '')
+            
+            symbols.append(SymbolInfo(
+                symbol=inst_name,
+                broker_symbol=str(inst_id),
+                description=inst.get('description', ''),
+                pip_size=float(inst.get('pipSize', 0.0001)),
+                pip_value=float(inst.get('pipValue', 10)),
+                lot_size=float(inst.get('contractSize', 100000)),
+                min_volume=float(inst.get('minOrderSize', 0.01)),
+                max_volume=float(inst.get('maxOrderSize', 100)),
+                volume_step=float(inst.get('orderSizeStep', 0.01))
+            ))
+        
+        return symbols
     
     async def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:
         """Get symbol information"""
@@ -259,16 +279,18 @@ class TradeLockerBroker(BaseBroker):
                 return None
             
             inst = inst.iloc[0]
+            inst_id = int(inst.get('tradableInstrumentId', 0))
             
             return SymbolInfo(
                 symbol=broker_symbol,
+                broker_symbol=str(inst_id),
                 description=inst.get('description', ''),
                 pip_size=float(inst.get('pipSize', 0.0001)),
                 pip_value=float(inst.get('pipValue', 10)),
                 lot_size=float(inst.get('contractSize', 100000)),
-                min_lot=float(inst.get('minOrderSize', 0.01)),
-                max_lot=float(inst.get('maxOrderSize', 100)),
-                lot_step=float(inst.get('orderSizeStep', 0.01))
+                min_volume=float(inst.get('minOrderSize', 0.01)),
+                max_volume=float(inst.get('maxOrderSize', 100)),
+                volume_step=float(inst.get('orderSizeStep', 0.01))
             )
         except Exception as e:
             print(f"[TradeLocker] Error getting symbol info: {e}")
@@ -551,7 +573,7 @@ class TradeLockerBrokerSync(TradeLockerBroker):
     def get_account_info(self) -> Optional[AccountInfo]:
         return self._get_loop().run_until_complete(super().get_account_info())
     
-    def get_symbols(self) -> List[str]:
+    def get_symbols(self) -> List[SymbolInfo]:
         return self._get_loop().run_until_complete(super().get_symbols())
     
     def get_symbol_info(self, symbol: str) -> Optional[SymbolInfo]:

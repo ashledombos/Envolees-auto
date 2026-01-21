@@ -742,6 +742,76 @@ def signal_list_instruments():
     console.print(table)
 
 
+# ============ CLEANER COMMAND ============
+
+@cli.group("cleaner")
+def cleaner():
+    """Order cleaner commands (cancel expired pending orders)"""
+    pass
+
+
+@cleaner.command("start")
+@click.option("--interval", "-i", default=60, type=int, help="Check interval in seconds")
+def cleaner_start(interval):
+    """Start the order cleaner daemon"""
+    import time
+    from services.order_cleaner import OrderCleanerSync
+    
+    cfg = get_config()
+    timeout_candles = cfg.general.order_timeout_candles
+    
+    cleaner_service = OrderCleanerSync(cfg)
+    
+    console.print(f"[green]🧹 Order cleaner started[/green]")
+    console.print(f"   Interval: {interval}s | Timeout: {timeout_candles} candles (4H)")
+    
+    try:
+        if not cleaner_service.connect():
+            console.print("[red]Failed to connect to brokers[/red]")
+            return
+        
+        console.print("[green]✅ Connected to brokers[/green]")
+        
+        # Main loop
+        while True:
+            try:
+                results = cleaner_service.cleanup_all()
+                total_cancelled = sum(r.get("orders_cancelled", 0) for r in results.values())
+                if total_cancelled > 0:
+                    console.print(f"[yellow]🗑️ Cancelled {total_cancelled} expired orders[/yellow]")
+            except Exception as e:
+                console.print(f"[red]Error in cleaner: {e}[/red]")
+            
+            time.sleep(interval)
+            
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cleaner stopped[/yellow]")
+    finally:
+        cleaner_service.disconnect()
+
+
+@cleaner.command("run-once")
+def cleaner_run_once():
+    """Run cleaner once and exit"""
+    from services.order_cleaner import OrderCleanerSync
+    
+    cfg = get_config()
+    cleaner_service = OrderCleanerSync(cfg)
+    
+    try:
+        if not cleaner_service.connect():
+            console.print("[red]Failed to connect to brokers[/red]")
+            return
+        
+        results = cleaner_service.cleanup_all()
+        
+        total_cancelled = sum(r.get("orders_cancelled", 0) for r in results.values())
+        if total_cancelled == 0:
+            console.print("[dim]No expired orders found[/dim]")
+    finally:
+        cleaner_service.disconnect()
+
+
 # ============ SERVER COMMAND ============
 
 @cli.command("serve")
