@@ -572,9 +572,11 @@ class CTraderBroker(BaseBroker):
             req.tradeSide = self._enum_value(req, "tradeSide", order.side.value)
             
             # Volume (convert lots to broker units)
-            # cTrader uses volume units: 1 lot = 100,000 units for Forex
-            # The multiplier may vary by instrument type
-            volume_multiplier = 100000  # Standard Forex lot
+            # cTrader uses volume units with internal scaling
+            # Testing shows: sent 98000 -> displayed as 980, so multiply by additional 100
+            # 0.01 lots minimum = 1000 displayed -> need to send 100000
+            # So: 1 lot = 10,000,000 units to send
+            volume_multiplier = 10000000  # 1 lot = 10 million units
             broker_volume = order.broker_volume or int(order.volume * volume_multiplier)
             req.volume = broker_volume
             
