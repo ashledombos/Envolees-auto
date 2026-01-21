@@ -389,13 +389,24 @@ class CTraderBroker(BaseBroker):
     
     def _process_order_response(self, payload, ptype: str):
         """Process order-related responses"""
-        # Debug: show what we received
         print(f"[cTrader] DEBUG: Received {ptype}")
         
         if "order_place" in self._pending_requests:
             future = self._pending_requests.pop("order_place")
             
-            # Try multiple ways to extract order ID
+            # Check for error response first
+            if ptype == "ProtoOAOrderErrorEvent" or "Error" in ptype:
+                error_code = getattr(payload, "errorCode", "UNKNOWN")
+                description = getattr(payload, "description", "No description")
+                print(f"[cTrader] ❌ Order rejected: {error_code} - {description}")
+                future.set_result(OrderResult(
+                    success=False,
+                    message=f"Order rejected: {error_code} - {description}",
+                    broker_response=payload
+                ))
+                return
+            
+            # Try to extract order ID from success response
             order_id = None
             
             # Method 1: payload.order.orderId (ExecutionEvent)
@@ -414,12 +425,6 @@ class CTraderBroker(BaseBroker):
                     order_id = payload.position.positionId
                     print(f"[cTrader] DEBUG: Found position.positionId = {order_id}")
             
-            # Method 4: Check deal for filled orders
-            if not order_id and hasattr(payload, "deal"):
-                if hasattr(payload.deal, "orderId"):
-                    order_id = payload.deal.orderId
-                    print(f"[cTrader] DEBUG: Found deal.orderId = {order_id}")
-            
             if order_id and order_id != 0:
                 print(f"[cTrader] ✅ Order placed: {order_id}")
                 future.set_result(OrderResult(
@@ -429,19 +434,13 @@ class CTraderBroker(BaseBroker):
                     broker_response=payload
                 ))
             else:
-                # Log all available attributes for debugging
-                attrs = [a for a in dir(payload) if not a.startswith('_')]
-                print(f"[cTrader] ⚠️ Could not extract order ID from {ptype}")
-                print(f"[cTrader] DEBUG: Available attrs: {attrs}")
-                if hasattr(payload, "order"):
-                    order_attrs = [a for a in dir(payload.order) if not a.startswith('_')]
-                    print(f"[cTrader] DEBUG: order attrs: {order_attrs}")
-                
-                # Still return success if we got a response (order likely placed)
+                # Log attributes for debugging
+                attrs = [a for a in dir(payload) if not a.startswith('_') and not a[0].isupper()]
+                print(f"[cTrader] ⚠️ Unexpected response: {ptype}, attrs: {attrs}")
                 future.set_result(OrderResult(
                     success=True,
-                    order_id="pending",
-                    message=f"Order sent, response: {ptype}",
+                    order_id="unknown",
+                    message=f"Response: {ptype}",
                     broker_response=payload
                 ))
         
