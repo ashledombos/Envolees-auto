@@ -392,21 +392,33 @@ class CTraderBroker(BaseBroker):
         if "order_place" in self._pending_requests:
             future = self._pending_requests.pop("order_place")
             
-            if hasattr(payload, "orderId"):
+            # cTrader ExecutionEvent contains order.orderId, not just orderId
+            order_id = None
+            if hasattr(payload, "order") and hasattr(payload.order, "orderId"):
+                order_id = str(payload.order.orderId)
+            elif hasattr(payload, "orderId"):
+                order_id = str(payload.orderId)
+            
+            if order_id:
+                print(f"[cTrader] ✅ Order placed: {order_id}")
                 future.set_result(OrderResult(
                     success=True,
-                    order_id=str(payload.orderId),
+                    order_id=order_id,
                     message="Order placed successfully",
                     broker_response=payload
                 ))
             elif hasattr(payload, "position"):
+                pos_id = str(payload.position.positionId) if hasattr(payload.position, "positionId") else "0"
+                print(f"[cTrader] ✅ Order filled immediately, position: {pos_id}")
                 future.set_result(OrderResult(
                     success=True,
-                    order_id=str(payload.position.positionId),
+                    order_id=pos_id,
                     message="Order filled immediately",
                     broker_response=payload
                 ))
             else:
+                # Debug: log what we received
+                print(f"[cTrader] ⚠️ Order response type: {ptype}, attrs: {dir(payload)}")
                 future.set_result(OrderResult(
                     success=True,
                     message=f"Response: {ptype}",
