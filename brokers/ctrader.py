@@ -571,9 +571,14 @@ class CTraderBroker(BaseBroker):
             # Side
             req.tradeSide = self._enum_value(req, "tradeSide", order.side.value)
             
-            # Volume (convert lots to broker units - usually x100)
-            broker_volume = order.broker_volume or int(order.volume * 100)
+            # Volume (convert lots to broker units)
+            # cTrader uses volume units: 1 lot = 100,000 units for Forex
+            # The multiplier may vary by instrument type
+            volume_multiplier = 100000  # Standard Forex lot
+            broker_volume = order.broker_volume or int(order.volume * volume_multiplier)
             req.volume = broker_volume
+            
+            print(f"[cTrader] DEBUG: Volume {order.volume} lots -> {broker_volume} units")
             
             # Stop loss and take profit
             if order.stop_loss:

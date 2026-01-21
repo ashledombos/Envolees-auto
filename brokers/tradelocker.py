@@ -415,8 +415,8 @@ class TradeLockerBroker(BaseBroker):
                         entry_price=float(order.get('price', 0)),
                         stop_loss=float(order.get('stopLoss', 0)) if order.get('stopLoss') else None,
                         take_profit=float(order.get('takeProfit', 0)) if order.get('takeProfit') else None,
-                        status=OrderStatus.PENDING,
-                        created_at=datetime.now(timezone.utc)
+                        created_time=datetime.now(timezone.utc),
+                        broker_id=self.broker_id
                     ))
             
             return pending
@@ -451,7 +451,7 @@ class TradeLockerBroker(BaseBroker):
                     stop_loss=float(pos.get('stopLoss', 0)) if pos.get('stopLoss') else None,
                     take_profit=float(pos.get('takeProfit', 0)) if pos.get('takeProfit') else None,
                     profit=float(pos.get('unrealizedPnl', 0)) if pos.get('unrealizedPnl') else 0,
-                    opened_at=datetime.now(timezone.utc)  # Simplified
+                    open_time=datetime.now(timezone.utc)  # Simplified
                 ))
             
             return positions
