@@ -422,22 +422,49 @@ class TradeLockerBroker(BaseBroker):
             
             pending = []
             for _, order in orders_df.iterrows():
-                status = order.get('status', '').upper()
-                if status in ['PENDING', 'NEW', 'WORKING']:
+                status = str(order.get('status', '')).upper()
+                if status in ['PENDING', 'NEW', 'WORKING', '']:
                     # Get symbol name from instrument ID
                     inst_id = order.get('tradableInstrumentId')
                     symbol = self._instruments_reverse_map.get(inst_id, str(inst_id))
                     
+                    # Parse created time from API response
+                    created_time = None
+                    for time_field in ['createdAt', 'created', 'openTime', 'timestamp', 'time', 'creationTime']:
+                        time_val = order.get(time_field)
+                        if time_val:
+                            try:
+                                if isinstance(time_val, (int, float)):
+                                    # Unix timestamp (seconds or milliseconds)
+                                    if time_val > 1e12:  # milliseconds
+                                        created_time = datetime.fromtimestamp(time_val / 1000, tz=timezone.utc)
+                                    else:
+                                        created_time = datetime.fromtimestamp(time_val, tz=timezone.utc)
+                                elif isinstance(time_val, str):
+                                    # ISO format string
+                                    created_time = datetime.fromisoformat(time_val.replace('Z', '+00:00'))
+                                elif isinstance(time_val, datetime):
+                                    created_time = time_val if time_val.tzinfo else time_val.replace(tzinfo=timezone.utc)
+                                break
+                            except Exception:
+                                continue
+                    
+                    # Fallback to now if no creation time found (shouldn't happen)
+                    if created_time is None:
+                        print(f"[TradeLocker] ⚠️ No creation time for order {order.get('id')}, using now()")
+                        print(f"[TradeLocker]    Available fields: {list(order.index)}")
+                        created_time = datetime.now(timezone.utc)
+                    
                     pending.append(PendingOrder(
                         order_id=str(order.get('id', '')),
                         symbol=symbol,
-                        side=OrderSide.BUY if order.get('side', '').lower() == 'buy' else OrderSide.SELL,
+                        side=OrderSide.BUY if str(order.get('side', '')).lower() == 'buy' else OrderSide.SELL,
                         order_type=OrderType.LIMIT,  # Simplified
                         volume=float(order.get('qty', 0)),
                         entry_price=float(order.get('price', 0)),
                         stop_loss=float(order.get('stopLoss', 0)) if order.get('stopLoss') else None,
                         take_profit=float(order.get('takeProfit', 0)) if order.get('takeProfit') else None,
-                        created_time=datetime.now(timezone.utc),
+                        created_time=created_time,
                         broker_id=self.broker_id
                     ))
             
