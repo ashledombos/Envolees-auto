@@ -61,7 +61,8 @@ class PositionSizer:
         quote_to_usd_rate: Optional[float] = None,
         min_lot: float = 0.01,
         max_lot: float = 100.0,
-        lot_step: float = 0.01
+        lot_step: float = 0.01,
+        symbol: str = "UNKNOWN"
     ) -> PositionSize:
         """
         Calculate position size.
@@ -76,6 +77,7 @@ class PositionSizer:
             min_lot: Minimum lot size allowed
             max_lot: Maximum lot size allowed
             lot_step: Lot size increment
+            symbol: Symbol name for logging
         
         Returns:
             PositionSize with calculated lots and details
@@ -86,6 +88,18 @@ class PositionSizer:
         # Calculate SL distance in pips
         sl_distance = abs(entry_price - sl_price)
         sl_pips = sl_distance / self.pip_size
+        
+        # Debug logging for non-USD pairs
+        if self.quote_currency and self.quote_currency != "USD":
+            print(f"[PositionSizer] {symbol} DEBUG:")
+            print(f"   pip_size: {self.pip_size}")
+            print(f"   pip_value_per_lot (config): {self.pip_value_per_lot}")
+            print(f"   quote_currency: {self.quote_currency}")
+            print(f"   contract_size: {self.contract_size}")
+            print(f"   entry_price: {entry_price}")
+            print(f"   sl_price: {sl_price}")
+            print(f"   sl_distance: {sl_distance}")
+            print(f"   sl_pips: {sl_pips:.2f}")
         
         if sl_pips == 0:
             return PositionSize(

@@ -295,12 +295,14 @@ def webhook():
             try:
                 placer = get_order_placer()
                 
-                global _event_loop
-                if _event_loop is None:
-                    _event_loop = asyncio.new_event_loop()
+                # Create a NEW event loop for THIS thread (fixes "Event loop already running")
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 
-                asyncio.set_event_loop(_event_loop)
-                results = _event_loop.run_until_complete(placer.place_signal(signal, brokers))
+                try:
+                    results = loop.run_until_complete(placer.place_signal(signal, brokers))
+                finally:
+                    loop.close()
                 
                 # Log results
                 success_count = sum(1 for r in results.values() if r.success)
