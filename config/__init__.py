@@ -231,7 +231,7 @@ def _save_file(path: Path, data: dict):
 
 
 def load_config(config_path: Optional[Path] = None, reload: bool = False) -> AppConfig:
-    """Load and validate configuration"""
+    """Load and validate configuration from multiple files"""
     global _config, _config_path
     
     if _config is not None and not reload:
@@ -264,11 +264,49 @@ def load_config(config_path: Optional[Path] = None, reload: bool = False) -> App
     
     data = _load_file(path)
     
+    # Load secrets from separate file if it exists
+    secrets_path = path.parent / "secrets.yaml"
+    if secrets_path.exists():
+        secrets = _load_file(secrets_path)
+        data = _merge_secrets(data, secrets)
+    
+    # Load instruments from separate file if it exists
+    instruments_path = path.parent / "instruments.yaml"
+    if instruments_path.exists():
+        instruments = _load_file(instruments_path)
+        # Instruments file is a flat dict of instrument configs
+        data["instruments"] = {**data.get("instruments", {}), **instruments}
+    
     # Apply environment variable overrides
     data = _apply_env_overrides(data)
     
     _config = AppConfig(**data)
     return _config
+
+
+def _merge_secrets(data: dict, secrets: dict) -> dict:
+    """Merge secrets into main configuration"""
+    # Webhook token
+    if "webhook_token" in secrets:
+        data.setdefault("webhook", {})["secret_token"] = secrets["webhook_token"]
+    
+    # Broker credentials
+    for broker_id in ["ftmo_ctrader", "gft_compte1", "gft_compte2"]:
+        if broker_id in secrets:
+            broker_secrets = secrets[broker_id]
+            data.setdefault("brokers", {}).setdefault(broker_id, {})
+            
+            # cTrader credentials
+            for key in ["client_id", "client_secret", "access_token", "refresh_token"]:
+                if key in broker_secrets:
+                    data["brokers"][broker_id][key] = broker_secrets[key]
+            
+            # TradeLocker credentials
+            for key in ["email", "password"]:
+                if key in broker_secrets:
+                    data["brokers"][broker_id][key] = broker_secrets[key]
+    
+    return data
 
 
 def _apply_env_overrides(data: dict) -> dict:

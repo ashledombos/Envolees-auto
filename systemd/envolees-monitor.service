@@ -1,0 +1,15 @@
+[Unit]
+Description=Envolées Health Monitor
+After=network-online.target envolees-webhook.service
+Wants=envolees-webhook.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/raphael/dev/envolees-auto
+ExecStart=/home/raphael/dev/envolees-auto/venv/bin/python cli/monitor.py watch --interval 300
+Restart=always
+RestartSec=60
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

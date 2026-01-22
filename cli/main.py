@@ -8,6 +8,7 @@ Main command-line interface for testing and management
 import os
 import sys
 import json
+from pathlib import Path
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,8 +24,17 @@ from config import load_config, get_config, save_config
 console = Console()
 
 
+def get_version() -> str:
+    """Read version from VERSION file"""
+    version_file = Path(__file__).parent.parent / "VERSION"
+    if version_file.exists():
+        return version_file.read_text().strip()
+    return "unknown"
+
+
 @click.group()
 @click.option("--config", "-c", "config_path", help="Path to config file")
+@click.version_option(version=get_version(), prog_name="envolees-auto")
 @click.pass_context
 def cli(ctx, config_path):
     """Trading Automation CLI - Manage brokers, orders, and signals"""
@@ -34,6 +44,43 @@ def cli(ctx, config_path):
         os.environ["TRADING_CONFIG_PATH"] = config_path
     
     load_config()
+
+
+# ============ VERSION COMMAND ============
+
+@cli.command("version")
+def version_cmd():
+    """Show version and system info"""
+    version = get_version()
+    
+    console.print(Panel(f"[bold cyan]Envolées Auto v{version}[/bold cyan]"))
+    
+    # Check config files
+    from pathlib import Path
+    config_dir = Path.cwd() / "config"
+    
+    table = Table(title="Configuration Files")
+    table.add_column("File", style="cyan")
+    table.add_column("Status", style="green")
+    
+    files = {
+        "settings.yaml": "Main config",
+        "secrets.yaml": "Credentials (optional)",
+        "instruments.yaml": "Instruments (optional)"
+    }
+    
+    for filename, desc in files.items():
+        path = config_dir / filename
+        if path.exists():
+            table.add_row(f"{filename}", f"✅ Found - {desc}")
+        else:
+            example = config_dir / f"{filename.replace('.yaml', '.example.yaml')}"
+            if example.exists():
+                table.add_row(f"{filename}", f"⚠️  Missing (example available)")
+            else:
+                table.add_row(f"{filename}", f"❌ Not found")
+    
+    console.print(table)
 
 
 # ============ CONFIG COMMANDS ============
@@ -464,6 +511,128 @@ def order_cancel(broker_id, order_id):
     
     finally:
         broker.disconnect()
+
+
+# ============ ORDERS CHECK COMMAND ============
+
+@order.command("check")
+@click.option("--broker", "-b", help="Specific broker (default: all)")
+def order_check(broker):
+    """Check pending orders with risk analysis"""
+    from brokers import create_broker
+    from services.position_sizer import PositionSizer
+    
+    cfg = get_config()
+    brokers_to_check = [broker] if broker else list(cfg.get_enabled_brokers().keys())
+    
+    console.print(Panel("[bold]Pending Orders Risk Analysis[/bold]"))
+    
+    for broker_id in brokers_to_check:
+        if broker_id not in cfg.brokers:
+            console.print(f"[red]Broker '{broker_id}' not found[/red]")
+            continue
+        
+        broker_cfg = cfg.brokers[broker_id]
+        broker_obj = create_broker(broker_id, broker_cfg, sync=True)
+        
+        try:
+            if not broker_obj.connect():
+                console.print(f"[red]Failed to connect to {broker_id}[/red]")
+                continue
+            
+            # Get account info
+            account_info = broker_obj.get_account_info()
+            balance = account_info.balance if account_info else 0
+            equity = account_info.equity if account_info else balance
+            
+            console.print(f"\n[bold cyan]--- {broker_cfg.get('name', broker_id)} ---[/bold cyan]")
+            console.print(f"Balance: ${balance:,.2f} | Equity: ${equity:,.2f}")
+            
+            # Get pending orders
+            orders = broker_obj.get_pending_orders()
+            
+            if not orders:
+                console.print("[dim]No pending orders[/dim]")
+                continue
+            
+            # Create table
+            table = Table(title=f"Pending Orders ({len(orders)})")
+            table.add_column("ID", style="cyan", max_width=15)
+            table.add_column("Symbol", style="yellow")
+            table.add_column("Side")
+            table.add_column("Lots", justify="right")
+            table.add_column("Entry", justify="right")
+            table.add_column("SL", justify="right")
+            table.add_column("TP", justify="right")
+            table.add_column("SL Pips", justify="right")
+            table.add_column("Risk $", justify="right")
+            table.add_column("Risk %", justify="right")
+            table.add_column("Created")
+            
+            total_risk = 0
+            
+            for order in orders:
+                # Get instrument config
+                inst_cfg = cfg.get_instrument_config(order.symbol) or {}
+                pip_size = inst_cfg.get("pip_size", 0.0001)
+                pip_value = inst_cfg.get("pip_value_per_lot")
+                quote_currency = inst_cfg.get("quote_currency")
+                
+                # Calculate SL pips
+                sl_pips = 0
+                risk_amount = 0
+                risk_percent = 0
+                
+                if order.stop_loss and order.entry_price:
+                    sl_distance = abs(order.entry_price - order.stop_loss)
+                    sl_pips = sl_distance / pip_size
+                    
+                    # Calculate pip value
+                    if pip_value is None and quote_currency:
+                        # Dynamic calculation
+                        base_pip_value = 100000 * pip_size
+                        pip_value = base_pip_value / order.entry_price
+                    elif pip_value is None:
+                        pip_value = 10  # Default
+                    
+                    # Calculate risk
+                    risk_amount = order.volume * sl_pips * pip_value
+                    risk_percent = (risk_amount / equity * 100) if equity > 0 else 0
+                    total_risk += risk_amount
+                
+                # Format side with color
+                side_str = f"[green]{order.side.value}[/green]" if order.side.value == "BUY" else f"[red]{order.side.value}[/red]"
+                
+                # Risk color
+                if risk_percent > 1.0:
+                    risk_color = "red"
+                elif risk_percent > 0.6:
+                    risk_color = "yellow"
+                else:
+                    risk_color = "green"
+                
+                table.add_row(
+                    order.order_id[:15] if len(order.order_id) > 15 else order.order_id,
+                    order.symbol,
+                    side_str,
+                    f"{order.volume:.2f}",
+                    f"{order.entry_price:.5f}",
+                    f"{order.stop_loss:.5f}" if order.stop_loss else "-",
+                    f"{order.take_profit:.5f}" if order.take_profit else "-",
+                    f"{sl_pips:.1f}",
+                    f"${risk_amount:.2f}",
+                    f"[{risk_color}]{risk_percent:.2f}%[/{risk_color}]",
+                    order.created_time.strftime("%d/%m %H:%M") if order.created_time else "-"
+                )
+            
+            console.print(table)
+            
+            # Summary
+            total_risk_percent = (total_risk / equity * 100) if equity > 0 else 0
+            console.print(f"[bold]Total pending risk: ${total_risk:,.2f} ({total_risk_percent:.2f}%)[/bold]")
+        
+        finally:
+            broker_obj.disconnect()
 
 
 # ============ CLEANUP COMMANDS ============

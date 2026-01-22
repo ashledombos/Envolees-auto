@@ -430,7 +430,7 @@ class TradeLockerBroker(BaseBroker):
                     
                     # Parse created time from API response
                     created_time = None
-                    for time_field in ['createdAt', 'created', 'openTime', 'timestamp', 'time', 'creationTime']:
+                    for time_field in ['createdDate', 'createdAt', 'created', 'openTime', 'timestamp', 'time', 'creationTime', 'lastModified']:
                         time_val = order.get(time_field)
                         if time_val:
                             try:

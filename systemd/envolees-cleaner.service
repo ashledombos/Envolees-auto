@@ -1,0 +1,17 @@
+[Unit]
+Description=Envolées Order Cleaner
+After=network-online.target envolees-webhook.service
+Requires=envolees-webhook.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/raphael/dev/envolees-auto
+# Délai de 30s pour éviter race condition avec webhook sur les tokens
+ExecStartPre=/bin/sleep 30
+ExecStart=/home/raphael/dev/envolees-auto/venv/bin/python cli/main.py cleaner start --interval 60
+Restart=always
+RestartSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

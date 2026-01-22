@@ -1,278 +1,217 @@
-# Trading Automation System
+# Envolées Auto - Trading Automation System
 
-Système d'automatisation pour exécuter les alertes TradingView sur plusieurs brokers (FTMO/cTrader et GFT/TradeLocker).
+Système d'automatisation de trading FVG pour prop firms (FTMO, GFT).
 
-## 🎯 Fonctionnalités
+## Version
 
-- **Webhook server** : Reçoit les alertes TradingView et place les ordres
-- **Multi-broker** : Support cTrader (FTMO) et TradeLocker (GFT)
-- **Multi-comptes** : Plusieurs comptes par plateforme
-- **Filtres pré-placement** : Protection automatique des comptes
-  - Marge insuffisante
-  - Proche du drawdown limite
-  - Trop de positions ouvertes
-  - Ordres en doublon
-  - Instrument non disponible
-- **Délai aléatoire** : Entre les placements pour éviter la détection de copy-trading
-- **Position sizing** : Calcul automatique basé sur le risque %
-- **Expiration automatique** : Annule les ordres non déclenchés après N bougies
-- **Configuration YAML** : Lisible avec commentaires
-
-## 📦 Installation
+Voir le fichier `VERSION` pour la version actuelle.
 
 ```bash
-# Cloner ou extraire le projet
-cd ~/dev/envolees-auto
-
-# Créer l'environnement virtuel et installer
-./setup.sh
-
-# Activer l'environnement (à faire à chaque session)
-source venv/bin/activate
-
-# Installer PyYAML si pas déjà fait
-pip install PyYAML
+cat VERSION
+# ou
+python cli/main.py --version
 ```
 
-## ⚙️ Configuration
+## Structure des fichiers de configuration
+
+La configuration est divisée en 3 fichiers pour plus de sécurité:
+
+```
+config/
+├── settings.yaml        # Paramètres généraux (peut être commité)
+├── secrets.yaml         # Credentials brokers (NE PAS COMMITER)
+└── instruments.yaml     # Configuration des instruments (optionnel)
+```
+
+### settings.yaml
+- Paramètres de risque, filtres, webhook
+- Configuration des brokers (sans credentials)
+
+### secrets.yaml
+- Token webhook
+- Client ID/Secret cTrader
+- Email/Password TradeLocker
+
+### instruments.yaml (optionnel)
+- Mapping des symboles par broker
+- pip_size, pip_value_per_lot, quote_currency
+
+## Installation
 
 ```bash
-# Copier l'exemple et éditer
+# Cloner le dépôt
+git clone <repo> envolees-auto
+cd envolees-auto
+
+# Créer l'environnement virtuel
+python3 -m venv venv
+source venv/bin/activate
+
+# Installer les dépendances
+pip install -r requirements.txt
+
+# Copier les fichiers de configuration
 cp config/settings.example.yaml config/settings.yaml
-nano config/settings.yaml
+cp config/secrets.example.yaml config/secrets.yaml
+cp config/instruments.example.yaml config/instruments.yaml
+
+# Éditer les fichiers
+nano config/secrets.yaml  # Ajouter vos credentials
+nano config/settings.yaml # Personnaliser si besoin
 ```
 
-### Structure du fichier YAML
-
-```yaml
-# Paramètres généraux
-general:
-  risk_percent: 0.5        # Risque par trade
-  use_equity: true         # Utiliser l'équité (vs balance)
-  order_timeout_candles: 4 # Expiration en bougies
-  candle_timeframe_minutes: 240  # H4
-
-# Délai entre brokers (évite détection copy-trading)
-execution:
-  delay_between_brokers:
-    enabled: true
-    min_ms: 500
-    max_ms: 3000
-
-# Filtres de protection des comptes
-filters:
-  min_margin_percent: 30
-  max_daily_drawdown_percent: 4.0
-  max_open_positions: 5
-  prevent_duplicate_orders: true
-
-# Brokers
-brokers:
-  ftmo_ctrader:
-    enabled: true
-    type: ctrader
-    # ... credentials
-  
-  gft_compte1:
-    enabled: true
-    type: tradelocker
-    base_url: "https://bsb.tradelocker.com"
-    # ... credentials
-
-# Mapping instruments centralisé
-instruments:
-  EURUSD:
-    ftmo_ctrader: "EURUSD"
-    gft_compte1: "EURUSD.X"
-    pip_size: 0.0001
-    pip_value_per_lot: 10
-```
-
-### cTrader (FTMO)
-
-Les tokens sont rafraîchis et sauvegardés automatiquement.
-
-```yaml
-ftmo_ctrader:
-  enabled: true
-  type: ctrader
-  client_id: "..."
-  client_secret: "..."
-  access_token: "..."
-  refresh_token: "..."
-  auto_refresh_token: true
-  account_id: 12345678
-```
-
-### TradeLocker (GFT)
-
-Utilisez `base_url: "https://bsb.tradelocker.com"` pour GFT.
-
-```yaml
-gft_compte1:
-  enabled: true
-  type: tradelocker
-  base_url: "https://bsb.tradelocker.com"
-  email: "..."
-  password: "..."
-  server: "GFTTL"
-  account_id: 1711519
-```
-
-## 🖥️ Commandes CLI
+## Services Systemd
 
 ```bash
-# Toujours activer le venv d'abord
-source venv/bin/activate
+# Copier les services (utilisateur)
+cp systemd/*.service ~/.config/systemd/user/
+
+# Activer le linger (survie après logout)
+sudo loginctl enable-linger $USER
+
+# Recharger et activer
+systemctl --user daemon-reload
+systemctl --user enable envolees-webhook envolees-cleaner envolees-monitor
+systemctl --user start envolees-webhook envolees-cleaner
+
+# Vérifier le statut
+systemctl --user status envolees-webhook envolees-cleaner
 ```
 
-### Tester les connexions
+## Commandes CLI
 
 ```bash
-python cli/main.py broker test ftmo_ctrader
-python cli/main.py broker test gft_compte1
-```
+# Version
+python cli/main.py version
 
-### Lister les symboles
-
-```bash
-python cli/main.py broker symbols ftmo_ctrader --search EUR
-```
-
-### 🧪 Simuler un signal (DRY RUN)
-
-```bash
-# Simuler sur tous les brokers
-python cli/main.py signal simulate \
-  -s EURUSD \
-  --side buy \
-  -e 1.0850 \
-  --sl 1.0800 \
-  --tp 1.0950
-
-# Simuler sur un broker spécifique
-python cli/main.py signal simulate \
-  -s XAUUSD \
-  --side sell \
-  -e 2650 \
-  --sl 2670 \
-  -b ftmo_ctrader
-
-# Placer un VRAI ordre (attention!)
-python cli/main.py signal simulate \
-  -s EURUSD \
-  --side buy \
-  -e 1.0850 \
-  --sl 1.0800 \
-  --live
-```
-
-### Vérifier les filtres
-
-```bash
-python cli/main.py signal check-filters -s EURUSD
-```
-
-### Voir les instruments configurés
-
-```bash
-python cli/main.py signal list-instruments
-```
-
-### Configuration
-
-```bash
+# Afficher la config
 python cli/main.py config show
-python cli/main.py config validate
-```
 
-## 🌐 Webhook Server
+# Vérifier les ordres pending avec analyse du risque
+python cli/main.py order check
 
-```bash
-# Démarrer
+# Lister les symboles d'un broker
+python cli/main.py broker symbols ftmo_ctrader
+
+# Simuler un signal
+python cli/main.py signal simulate -s EURUSD --side buy -e 1.04 --sl 1.035
+
+# Démarrer le serveur webhook
 python cli/main.py serve --port 5000
 
-# URL webhook pour TradingView
-http://votre-serveur:5000/webhook?token=VOTRE_TOKEN_SECRET
+# Démarrer le cleaner d'ordres
+python cli/main.py cleaner start --interval 60
+
+# Health check
+python cli/monitor.py check
 ```
 
-### Format des alertes TradingView
+## Monitoring
+
+Le script `cli/monitor.py` surveille le système:
+
+```bash
+# Vérification unique
+python cli/monitor.py check
+
+# Surveillance continue (toutes les 5 min)
+python cli/monitor.py watch --interval 300
+
+# Avec alertes (nécessite apprise)
+pip install apprise
+python cli/monitor.py watch --alert-channel "tgram://BOT_TOKEN/CHAT_ID"
+```
+
+## Structure du projet
+
+```
+envolees-auto/
+├── VERSION                 # Numéro de version
+├── cli/
+│   ├── main.py            # CLI principal
+│   └── monitor.py         # Health monitor
+├── brokers/
+│   ├── ctrader.py         # Connecteur cTrader (FTMO)
+│   └── tradelocker.py     # Connecteur TradeLocker (GFT)
+├── config/
+│   ├── __init__.py        # Loader de config
+│   ├── settings.yaml      # Config principale
+│   ├── secrets.yaml       # Credentials (gitignore)
+│   └── instruments.yaml   # Mapping instruments
+├── services/
+│   ├── order_placer.py    # Placement d'ordres
+│   ├── position_sizer.py  # Calcul des lots
+│   └── order_cleaner.py   # Nettoyage ordres expirés
+├── webhook/
+│   └── server.py          # Serveur Flask webhook
+├── logs/                   # Fichiers de log
+├── systemd/               # Services systemd
+└── debug/                 # Scripts de debug
+```
+
+## Calcul du Position Sizing
+
+Le système calcule automatiquement la taille de position:
+
+```
+lots = risk_amount / (sl_pips × pip_value_per_lot)
+```
+
+### Types de paires
+
+1. **XXX/USD** (EURUSD, GBPUSD): `pip_value = 10` (fixe)
+2. **USD/XXX** (USDZAR, USDMXN): `pip_value = 10 / prix`
+3. **XXX/JPY** (EURJPY, AUDJPY): `pip_value = 1000 / prix`
+
+### Configuration des instruments
+
+```yaml
+# Paire XXX/USD - pip value fixe
+EURUSD:
+  pip_size: 0.0001
+  pip_value_per_lot: 10
+
+# Paire USD/XXX - pip value dynamique
+USDZAR:
+  pip_size: 0.0001
+  pip_value_per_lot: null  # Important!
+  quote_currency: "ZAR"    # Important!
+```
+
+## Webhook TradingView
+
+Endpoint: `POST /webhook?token=VOTRE_TOKEN`
 
 ```json
 {
-  "symbol": "{{ticker}}",
-  "side": "{{strategy.order.action}}",
-  "entry": {{strategy.order.price}},
-  "sl": {{plot("SL")}},
-  "tp": {{plot("TP")}},
-  "timeframe": "240"
+  "symbol": "EURUSD",
+  "side": "buy",
+  "entry": 1.0400,
+  "sl": 1.0350,
+  "tp": 1.0500
 }
 ```
 
-## 🛡️ Filtres de Protection
+## Changelog
 
-Avant chaque placement, le système vérifie :
+### v5.1.0
+- Configuration séparée en 3 fichiers (settings, secrets, instruments)
+- Commande `order check` pour vérifier le risque des ordres pending
+- Commande `version` pour afficher la version
+- Script de monitoring avec alertes
+- Fix asyncio (event loop already running)
+- Fix cleaner TradeLocker (champ createdDate)
+- Services systemd inclus
 
-| Filtre | Description |
-|--------|-------------|
-| Instrument disponible | Le symbole existe sur ce broker |
-| Marge suffisante | Marge libre > seuil configuré |
-| Drawdown | Pas trop proche de la limite |
-| Positions max | Pas trop de positions ouvertes |
-| Ordres pending max | Pas trop d'ordres en attente |
-| Pas de doublon | Pas d'ordre pending sur le même instrument |
+### v5.0.0
+- Fix calcul pip_value pour paires USD/XXX
+- Logs de debug pour position sizing
 
-Si un filtre échoue, l'ordre est **skippé** pour ce broker (pas d'erreur).
+### v4.0.0
+- Fix cleaner TradeLocker
+- Debug script complet
 
-## 📊 Position Sizing
-
-Le calcul de taille de lot est automatique :
-
-```
-Lots = (Équité × Risque%) / (SL_pips × Valeur_pip_par_lot)
-```
-
-Pour les paires cross (ex: EURJPY), configurez `quote_currency` dans les instruments.
-
-## 📁 Structure
-
-```
-trading-automation/
-├── brokers/           # Connecteurs cTrader & TradeLocker
-├── cli/               # Interface ligne de commande
-├── config/
-│   ├── settings.yaml  # Votre config (gitignored)
-│   └── settings.example.yaml
-├── services/
-│   ├── order_placer.py    # Placement avec filtres
-│   └── position_sizer.py  # Calcul taille de lot
-├── webhook/           # Serveur Flask
-└── requirements.txt
-```
-
-## 🔧 Troubleshooting
-
-### "PyYAML not installed"
-```bash
-pip install PyYAML
-```
-
-### "Broker not connected"
-Vérifiez le `base_url` pour GFT : `https://bsb.tradelocker.com`
-
-### "Token refresh error"
-Régénérez un nouveau couple access/refresh token sur openapi.ctrader.com
-
-### "0 instruments"
-Pour TradeLocker, utilisez le bon host (`bsb.tradelocker.com` pour GFT)
-
-## 📝 Notes
-
-- Les tokens cTrader sont rafraîchis automatiquement (validité ~30 jours)
-- Le fichier `settings.yaml` contient vos credentials - **jamais commiter**
-- Testez toujours avec `--dry-run` avant `--live`
-- Le délai aléatoire entre brokers aide à éviter la détection de copy-trading
-
-## 📄 License
-
-Usage personnel uniquement.
+### v3.0.0
+- Réponse asynchrone webhook (HTTP 202)
+- Système de logging avec rotation
+- Service cleaner systemd
