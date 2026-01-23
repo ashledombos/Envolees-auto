@@ -249,17 +249,27 @@ class TradeLockerBroker(BaseBroker):
         for _, inst in self._instruments_df.iterrows():
             inst_id = int(inst.get('tradableInstrumentId', 0))
             inst_name = inst.get('name', '')
+            pip_size = float(inst.get('pipSize', 0.0001))
+            
+            # Try to get tick_size, fallback to pip_size / 10 (typical)
+            tick_size = float(inst.get('tickSize', pip_size / 10))
+            
+            # Calculate digits from tick_size
+            import math
+            digits = max(0, int(-math.log10(tick_size))) if tick_size > 0 else 5
             
             symbols.append(SymbolInfo(
                 symbol=inst_name,
                 broker_symbol=str(inst_id),
                 description=inst.get('description', ''),
-                pip_size=float(inst.get('pipSize', 0.0001)),
+                pip_size=pip_size,
                 pip_value=float(inst.get('pipValue', 10)),
                 lot_size=float(inst.get('contractSize', 100000)),
                 min_volume=float(inst.get('minOrderSize', 0.01)),
                 max_volume=float(inst.get('maxOrderSize', 100)),
-                volume_step=float(inst.get('orderSizeStep', 0.01))
+                volume_step=float(inst.get('orderSizeStep', 0.01)),
+                tick_size=tick_size,
+                digits=digits
             ))
         
         return symbols
@@ -280,17 +290,27 @@ class TradeLockerBroker(BaseBroker):
             
             inst = inst.iloc[0]
             inst_id = int(inst.get('tradableInstrumentId', 0))
+            pip_size = float(inst.get('pipSize', 0.0001))
+            
+            # Try to get tick_size, fallback to pip_size / 10 (typical)
+            tick_size = float(inst.get('tickSize', pip_size / 10))
+            
+            # Calculate digits from tick_size
+            import math
+            digits = max(0, int(-math.log10(tick_size))) if tick_size > 0 else 5
             
             return SymbolInfo(
                 symbol=broker_symbol,
                 broker_symbol=str(inst_id),
                 description=inst.get('description', ''),
-                pip_size=float(inst.get('pipSize', 0.0001)),
+                pip_size=pip_size,
                 pip_value=float(inst.get('pipValue', 10)),
                 lot_size=float(inst.get('contractSize', 100000)),
                 min_volume=float(inst.get('minOrderSize', 0.01)),
                 max_volume=float(inst.get('maxOrderSize', 100)),
-                volume_step=float(inst.get('orderSizeStep', 0.01))
+                volume_step=float(inst.get('orderSizeStep', 0.01)),
+                tick_size=tick_size,
+                digits=digits
             )
         except Exception as e:
             print(f"[TradeLocker] Error getting symbol info: {e}")

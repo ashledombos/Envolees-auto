@@ -414,7 +414,7 @@ class OrderPlacer:
         signal: SignalData,
         dry_run: bool = False
     ) -> PlacementResult:
-        """Place order on a single broker"""
+        """Place order on a single broker with conservative price rounding"""
         
         # Get broker-specific symbol
         broker_symbol = self.config.get_instrument_symbol(signal.symbol, broker_id)
@@ -429,21 +429,53 @@ class OrderPlacer:
                 error="Could not get account info"
             )
         
-        # Get instrument config
+        # Get instrument config from our YAML
         instrument_config = self.config.get_instrument_config(signal.symbol) or {}
+        
+        # Get symbol info from broker (for tick_size)
+        symbol_info = await broker.get_symbol_info(broker_symbol)
+        
+        # Apply conservative rounding to SL and TP if we have tick_size info
+        entry_price = signal.entry_price
+        sl_price = signal.stop_loss
+        tp_price = signal.take_profit
+        
+        if symbol_info and symbol_info.tick_size > 0:
+            original_sl = sl_price
+            original_tp = tp_price
+            
+            # Round SL conservatively (further from entry = less risk)
+            sl_price = symbol_info.round_sl_conservative(sl_price, entry_price)
+            
+            # Round TP conservatively (closer to entry = less reward but more realistic)
+            tp_price = symbol_info.round_tp_conservative(tp_price, entry_price)
+            
+            # Round entry price conservatively (slightly worse entry)
+            entry_price = symbol_info.round_entry_conservative(entry_price, signal.order_side)
+            
+            # Log if significant rounding occurred
+            pip_size = instrument_config.get("pip_size", symbol_info.pip_size)
+            sl_diff_pips = abs(sl_price - original_sl) / pip_size
+            tp_diff_pips = abs(tp_price - original_tp) / pip_size
+            
+            if sl_diff_pips > 0.5 or tp_diff_pips > 0.5:
+                print(f"[OrderPlacer] {broker.name} tick rounding applied:")
+                print(f"              Entry: {signal.entry_price} → {entry_price}")
+                print(f"              SL: {original_sl} → {sl_price} ({sl_diff_pips:.1f} pips)")
+                print(f"              TP: {original_tp} → {tp_price} ({tp_diff_pips:.1f} pips)")
         
         # Determine account value (equity or balance)
         account_value = account_info.equity if self.config.general.use_equity else account_info.balance
         if not account_value or account_value <= 0:
             account_value = account_info.balance or 10000  # Fallback
         
-        # Calculate position size
+        # Calculate position size with ROUNDED SL (this is the key change)
         position_size = calculate_position_size(
             instrument_config=instrument_config,
             account_value=account_value,
             risk_percent=self.config.general.risk_percent,
-            entry_price=signal.entry_price,
-            sl_price=signal.stop_loss
+            entry_price=entry_price,  # Use rounded entry
+            sl_price=sl_price  # Use rounded SL for accurate risk
         )
         
         print(f"[OrderPlacer] {broker.name}: {position_size.details}")
@@ -464,24 +496,24 @@ class OrderPlacer:
             timeframe_minutes
         )
         
-        # Create order request
+        # Create order request with rounded prices
         order = OrderRequest(
             symbol=signal.symbol,
-            broker_symbol=broker_symbol,  # Pass the broker-specific symbol
+            broker_symbol=broker_symbol,
             side=signal.order_side,
             order_type=signal.broker_order_type,
             volume=position_size.lots,
-            entry_price=signal.entry_price,
-            stop_loss=signal.stop_loss,
-            take_profit=signal.take_profit,
+            entry_price=entry_price,  # Rounded
+            stop_loss=sl_price,       # Rounded
+            take_profit=tp_price,     # Rounded
             expiry_timestamp_ms=expiry_ms,
             label=f"TV-{signal.symbol[:8]}",
             comment=f"Signal {signal.timeframe} {signal.side}"
         )
         
         print(f"[OrderPlacer] {'[DRY RUN] ' if dry_run else ''}Placing on {broker.name}:")
-        print(f"              {signal.side} {position_size.lots} lots {broker_symbol} @ {signal.entry_price}")
-        print(f"              SL: {signal.stop_loss}, TP: {signal.take_profit}")
+        print(f"              {signal.side} {position_size.lots} lots {broker_symbol} @ {entry_price}")
+        print(f"              SL: {sl_price}, TP: {tp_price}")
         
         if dry_run:
             return PlacementResult(
@@ -497,6 +529,37 @@ class OrderPlacer:
         
         # Place order
         result = await broker.place_order(order)
+        
+        # Post-order validation (if we have the placed order details)
+        if result.success and result.broker_response:
+            try:
+                from brokers.base import validate_placed_order
+                pip_size = instrument_config.get("pip_size", 0.0001)
+                
+                # Try to extract actual values from broker response
+                actual_sl = getattr(result.broker_response, 'stopLoss', None)
+                actual_tp = getattr(result.broker_response, 'takeProfit', None)
+                actual_volume = getattr(result.broker_response, 'volume', None)
+                if actual_volume:
+                    actual_volume = actual_volume / 10000000  # Convert cTrader units to lots
+                
+                validation = validate_placed_order(
+                    requested=order,
+                    actual_sl=actual_sl,
+                    actual_tp=actual_tp,
+                    actual_volume=actual_volume,
+                    pip_size=pip_size
+                )
+                
+                if validation.warnings:
+                    for warning in validation.warnings:
+                        print(f"[OrderPlacer] {broker.name} {warning}")
+                
+                if not validation.is_valid:
+                    print(f"[OrderPlacer] ⚠️ {broker.name}: Order placed but with RISK WARNING")
+            except Exception as e:
+                # Don't fail the order just because validation failed
+                pass
         
         return PlacementResult(
             broker_id=broker_id,

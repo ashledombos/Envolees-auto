@@ -325,13 +325,31 @@ class CTraderBroker(BaseBroker):
         for s in payload.symbol:
             symbol_id = s.symbolId
             symbol_name = getattr(s, "symbolName", f"ID:{symbol_id}")
+            digits = getattr(s, "digits", 5)
+            
+            # Extract tick_size from digits
+            # In cTrader, tick_size is typically 10^(-digits) but can be different
+            # Some symbols have a pipPosition that indicates where the pip is
+            pip_position = getattr(s, "pipPosition", digits - 1)
+            tick_size = 10 ** (-digits)
+            pip_size = 10 ** (-pip_position) if pip_position > 0 else tick_size
+            
+            # Volume constraints
+            min_volume = getattr(s, "minVolume", 1000) / 100  # Convert to lots
+            max_volume = getattr(s, "maxVolume", 10000000) / 100
+            step_volume = getattr(s, "stepVolume", 1000) / 100
             
             self._symbols[symbol_id] = SymbolInfo(
                 symbol=symbol_name,
                 broker_symbol=str(symbol_id),
                 description=getattr(s, "description", ""),
-                digits=getattr(s, "digits", 5),
-                pip_size=10 ** (-getattr(s, "digits", 5)),
+                digits=digits,
+                tick_size=tick_size,
+                pip_size=pip_size,
+                min_volume=min_volume,
+                max_volume=max_volume,
+                volume_step=step_volume,
+                lot_size=100000,  # Standard forex
                 is_tradable=True
             )
     
