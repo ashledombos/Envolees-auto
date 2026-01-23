@@ -51,6 +51,29 @@ class PositionSizer:
         self.contract_size = config.get("contract_size", 100000)
         self.quote_currency = config.get("quote_currency")
     
+    # Default pip values for common quote currencies (approximate, conservative)
+    # These are used as sanity check bounds and fallbacks
+    # Based on typical exchange rates - updated periodically
+    DEFAULT_PIP_VALUES = {
+        "JPY": 6.5,    # ~1000/155 (USDJPY ~155)
+        "CHF": 11.0,   # ~10/0.90 (USDCHF ~0.90)
+        "GBP": 12.5,   # ~10/0.80 (GBPUSD ~1.25, so USDGBP ~0.80)
+        "CAD": 7.2,    # ~10/1.38 (USDCAD ~1.38)
+        "AUD": 6.5,    # ~10/1.55 (AUDUSD ~0.65, so USDAUD ~1.55)
+        "NZD": 5.9,    # ~10/1.70 (NZDUSD ~0.59, so USDNZD ~1.70)
+        "EUR": 10.8,   # ~10/0.93 (EURUSD ~1.08, so USDEUR ~0.93)
+        "ZAR": 0.55,   # ~10/18 (USDZAR ~18)
+        "MXN": 0.50,   # ~10/20 (USDMXN ~20)
+        "CNH": 1.4,    # ~10/7.2 (USDCNH ~7.2)
+        "SGD": 7.4,    # ~10/1.35 (USDSGD ~1.35)
+        "NOK": 0.90,   # ~10/11 (USDNOK ~11)
+        "HUF": 0.026,  # ~10/380 (USDHUF ~380)
+        "CZK": 0.42,   # ~10/24 (USDCZK ~24)
+    }
+    
+    # Maximum deviation allowed from expected pip value (safety margin)
+    MAX_PIP_VALUE_DEVIATION = 0.50  # 50% - if calculated value deviates more, use default
+    
     def calculate(
         self,
         account_value: float,
@@ -164,71 +187,79 @@ class PositionSizer:
         """
         Get pip value per standard lot in USD.
         
+        Uses a sanity check against known default values to prevent
+        calculation errors that could lead to oversized positions.
+        
         Cases:
         1. XXX/USD pairs: pip value = 10 USD (fixed)
         2. USD/XXX pairs: pip value = 10 / current_price
-        3. XXX/YYY pairs: pip value = 10 / (YYY_to_USD rate)
-        
-        For simplicity, if pip_value_per_lot is configured, use it.
-        Otherwise, try to calculate dynamically.
+        3. XXX/YYY pairs: pip value depends on YYY/USD rate
         """
-        # If static value is configured, use it
+        # If static value is configured, use it (most reliable)
         if self.pip_value_per_lot is not None:
             return self.pip_value_per_lot
         
-        # Standard forex lot = 100,000 units
-        # 1 pip = pip_size (e.g., 0.0001)
-        # Pip value = contract_size × pip_size × conversion_rate
+        # Get default value for this quote currency (if known)
+        default_pip_value = None
+        if self.quote_currency and self.quote_currency in self.DEFAULT_PIP_VALUES:
+            default_pip_value = self.DEFAULT_PIP_VALUES[self.quote_currency]
+            
+            # Adjust for non-standard pip sizes (e.g., JPY pairs with 0.01 pip)
+            # Standard forex pip = 0.0001, JPY pip = 0.01 (100x larger)
+            if self.pip_size >= 0.01 and self.quote_currency == "JPY":
+                # JPY pair - default is already correct
+                pass
+            elif self.pip_size >= 0.001 and self.quote_currency not in ["JPY"]:
+                # Non-standard pip size, scale accordingly
+                scale = self.pip_size / 0.0001
+                default_pip_value = default_pip_value * scale
         
+        # Standard forex lot = 100,000 units
         base_pip_value = self.contract_size * self.pip_size
         
-        if self.quote_currency is None:
-            # Assume USD is quote currency
+        if self.quote_currency is None or self.quote_currency == "USD":
             return base_pip_value  # = 10 for standard forex
         
-        # Need to convert from quote currency to USD
-        if self.quote_currency == "USD":
-            return base_pip_value
+        # Try to calculate dynamically
+        calculated_pip_value = None
         
         if quote_to_usd_rate is not None:
-            # XXX/YYY pair - convert YYY to USD using provided rate
-            return base_pip_value * quote_to_usd_rate
+            # Explicit rate provided - use it
+            calculated_pip_value = base_pip_value * quote_to_usd_rate
+        elif current_price > 1:
+            # Estimate by dividing base_pip_value by current price
+            # This works for USD/XXX pairs but is WRONG for XXX/YYY crosses!
+            calculated_pip_value = base_pip_value / current_price
         
-        # For USD/XXX pairs (like USDZAR, USDMXN, USDJPY, etc.)
-        # pip_value = base_pip_value / current_price
-        # This works because:
-        # - Position is in USD (base currency)
-        # - P&L is in quote currency (XXX)
-        # - We need to convert XXX back to USD: divide by current_price
-        
-        # Detect if current_price is "large" (likely JPY pair) or "normal"
-        # JPY pairs: price > 50 (like USDJPY = 150, EURJPY = 160)
-        # Other exotic: price > 1 (like USDZAR = 16, USDMXN = 17)
-        
-        if current_price > 1:
-            # This is likely a USD/XXX pair where XXX is not USD
-            # For USDZAR at 16.29: pip_value = 10 / 16.29 = 0.61 USD
-            # For USDJPY at 150: pip_value = 10 / 150 = 0.067 USD (but pip_size is 0.01!)
+        # Sanity check: compare calculated vs default
+        if calculated_pip_value is not None and default_pip_value is not None:
+            deviation = abs(calculated_pip_value - default_pip_value) / default_pip_value
             
-            # Adjust for JPY pairs where pip_size is 0.01 instead of 0.0001
-            if self.pip_size >= 0.01:
-                # JPY pair - pip is 0.01, base_pip_value is already 1000
-                # pip_value = 1000 / 150 ≈ 6.67 USD per pip per lot
-                return base_pip_value / current_price
+            if deviation > self.MAX_PIP_VALUE_DEVIATION:
+                # Calculated value deviates too much from expected
+                # This likely means we're using wrong price (e.g., CHFJPY price instead of USDJPY)
+                print(f"[PositionSizer] ⚠️  Pip value sanity check FAILED:")
+                print(f"   Calculated: ${calculated_pip_value:.2f}")
+                print(f"   Expected ({self.quote_currency}): ${default_pip_value:.2f}")
+                print(f"   Deviation: {deviation*100:.1f}% > {self.MAX_PIP_VALUE_DEVIATION*100:.0f}% max")
+                print(f"   → Using safe default: ${default_pip_value:.2f}")
+                return default_pip_value
             else:
-                # Standard exotic pair (USDZAR, USDMXN, etc.)
-                # pip is 0.0001, base_pip_value is 10
-                # pip_value = 10 / 16.29 ≈ 0.61 USD per pip per lot
-                return base_pip_value / current_price
+                # Calculated value is within acceptable range
+                return calculated_pip_value
         
-        # For cross pairs like EURJPY, GBPCHF, etc.
-        # We'd ideally need the XXX/USD rate, but estimate with current price
-        if current_price > 50:
-            # Likely a JPY cross (EURJPY, GBPJPY, etc.)
-            # Very rough approximation - not ideal
-            return base_pip_value / current_price
+        # If we have a default but no calculated value, use default
+        if default_pip_value is not None:
+            print(f"[PositionSizer] Using default pip value for {self.quote_currency}: ${default_pip_value:.2f}")
+            return default_pip_value
         
-        # Default fallback - assume close to base_pip_value
+        # If we have a calculated value but no default to check against
+        if calculated_pip_value is not None:
+            print(f"[PositionSizer] ⚠️  No default pip value for {self.quote_currency}, using calculated: ${calculated_pip_value:.2f}")
+            return calculated_pip_value
+        
+        # Last resort fallback
+        print(f"[PositionSizer] ⚠️  Could not determine pip value, using base: ${base_pip_value:.2f}")
         return base_pip_value
 
 

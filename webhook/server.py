@@ -10,12 +10,15 @@ import json
 import asyncio
 import threading
 import logging
+import time
 from logging.handlers import RotatingFileHandler
 from datetime import datetime, timezone
 from typing import Optional
 from functools import wraps
 
 from flask import Flask, request, jsonify, abort
+from queue import Queue, Empty
+import random
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,6 +26,113 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import load_config, get_config
 from services.order_placer import OrderPlacer, SignalData
 from utils.notifications import get_notification_service, NotificationType, Notification
+
+
+# =============================================================================
+# SIGNAL QUEUE CONFIGURATION
+# =============================================================================
+# Signals are queued and processed sequentially to avoid overwhelming brokers
+# when multiple alerts arrive simultaneously
+
+_signal_queue: Queue = Queue()
+_queue_worker_started = False
+_queue_worker_lock = threading.Lock()
+
+
+def start_queue_worker():
+    """Start the background worker that processes signals from the queue"""
+    global _queue_worker_started
+    
+    with _queue_worker_lock:
+        if _queue_worker_started:
+            return
+        _queue_worker_started = True
+    
+    def worker():
+        """Background worker that processes signals sequentially"""
+        config = get_config()
+        
+        # Get delay settings (reuse delay_between_brokers config, or default 1-3s)
+        delay_config = config.execution.delay_between_brokers
+        min_delay_ms = delay_config.min_ms if delay_config.enabled else 1000
+        max_delay_ms = delay_config.max_ms if delay_config.enabled else 3000
+        
+        logging.info(f"[QueueWorker] Started - delay between signals: {min_delay_ms}-{max_delay_ms}ms")
+        
+        last_signal_time = 0
+        
+        while True:
+            try:
+                # Wait for next signal (blocking)
+                item = _signal_queue.get(timeout=60)
+                
+                if item is None:
+                    continue
+                
+                request_id, signal, brokers = item
+                
+                # Apply delay since last signal (if not the first one)
+                if last_signal_time > 0:
+                    elapsed_ms = (time.time() - last_signal_time) * 1000
+                    required_delay_ms = random.randint(min_delay_ms, max_delay_ms)
+                    
+                    if elapsed_ms < required_delay_ms:
+                        wait_ms = required_delay_ms - elapsed_ms
+                        logging.info(f"[QueueWorker] Waiting {int(wait_ms)}ms before next signal...")
+                        time.sleep(wait_ms / 1000)
+                
+                # Process the signal
+                logging.info(f"[QueueWorker] [{request_id}] Processing {signal.symbol} {signal.side}")
+                
+                try:
+                    placer = get_order_placer()
+                    
+                    # Create event loop for this operation
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    try:
+                        results = loop.run_until_complete(placer.place_signal(signal, brokers))
+                    finally:
+                        loop.close()
+                    
+                    # Log results
+                    success_count = sum(1 for r in results.values() if r.success)
+                    total_count = len(results)
+                    
+                    logging.info(f"[QueueWorker] [{request_id}] Completed: {success_count}/{total_count} successful")
+                    
+                    for broker_id, result in results.items():
+                        if result.success:
+                            order_id = result.order_result.order_id if result.order_result else "N/A"
+                            logging.info(f"[QueueWorker] [{request_id}] ✅ {broker_id}: Order {order_id}")
+                        else:
+                            error = result.order_result.message if result.order_result else result.error
+                            logging.warning(f"[QueueWorker] [{request_id}] ❌ {broker_id}: {error}")
+                    
+                except Exception as e:
+                    logging.error(f"[QueueWorker] [{request_id}] Error: {e}", exc_info=True)
+                
+                finally:
+                    last_signal_time = time.time()
+                    _signal_queue.task_done()
+                
+            except Empty:
+                # No signal in queue, continue waiting
+                continue
+            except Exception as e:
+                logging.error(f"[QueueWorker] Unexpected error: {e}", exc_info=True)
+    
+    thread = threading.Thread(target=worker, daemon=True, name="SignalQueueWorker")
+    thread.start()
+    logging.info("[QueueWorker] Background worker thread started")
+
+
+def queue_signal(request_id: str, signal: SignalData, brokers: list = None):
+    """Add a signal to the processing queue"""
+    queue_size = _signal_queue.qsize()
+    _signal_queue.put((request_id, signal, brokers))
+    logging.info(f"[QueueWorker] [{request_id}] Signal queued ({signal.symbol} {signal.side}) - Queue size: {queue_size + 1}")
 
 
 # =============================================================================
@@ -290,46 +400,16 @@ def webhook():
         # Generate request ID for tracking
         request_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")[:18]
         
-        # Process orders in background thread
-        def process_orders_background():
-            try:
-                placer = get_order_placer()
-                
-                # Create a NEW event loop for THIS thread (fixes "Event loop already running")
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                try:
-                    results = loop.run_until_complete(placer.place_signal(signal, brokers))
-                finally:
-                    loop.close()
-                
-                # Log results
-                success_count = sum(1 for r in results.values() if r.success)
-                total_count = len(results)
-                
-                app.logger.info(f"[{request_id}] Orders completed: {success_count}/{total_count} successful")
-                
-                for broker_id, result in results.items():
-                    if result.success:
-                        order_id = result.order_result.order_id if result.order_result else "N/A"
-                        app.logger.info(f"[{request_id}] ✅ {broker_id}: Order {order_id}")
-                    else:
-                        error = result.order_result.message if result.order_result else result.error
-                        app.logger.warning(f"[{request_id}] ❌ {broker_id}: {error}")
-                
-            except Exception as e:
-                app.logger.error(f"[{request_id}] Background processing error: {e}", exc_info=True)
-        
-        # Start background thread
-        thread = threading.Thread(target=process_orders_background, daemon=True)
-        thread.start()
+        # Queue the signal for sequential processing
+        queue_signal(request_id, signal, brokers)
         
         # Respond immediately to TradingView
+        queue_size = _signal_queue.qsize()
         response = {
             "success": True,
-            "status": "accepted",
+            "status": "queued",
             "request_id": request_id,
+            "queue_position": queue_size,
             "signal": {
                 "symbol": signal.symbol,
                 "side": signal.side,
@@ -338,11 +418,11 @@ def webhook():
                 "tp": signal.take_profit,
                 "rr_ratio": round(signal.calculate_rr_ratio(), 2)
             },
-            "message": "Signal received, orders being placed in background",
+            "message": f"Signal queued for processing (position: {queue_size})",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
-        app.logger.info(f"[{request_id}] Signal accepted: {signal.symbol} {signal.side}")
+        app.logger.info(f"[{request_id}] Signal queued: {signal.symbol} {signal.side} (queue: {queue_size})")
         
         return jsonify(response), 202  # 202 Accepted
         
@@ -493,6 +573,17 @@ def status():
     })
 
 
+@app.route("/queue", methods=["GET"])
+@require_auth
+def queue_status():
+    """Get signal queue status"""
+    return jsonify({
+        "queue_size": _signal_queue.qsize(),
+        "worker_running": _queue_worker_started,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    })
+
+
 def run_server(host: str = "0.0.0.0", port: int = 5000, debug: bool = False):
     """Run the webhook server"""
     # Load config first
@@ -508,9 +599,14 @@ def run_server(host: str = "0.0.0.0", port: int = 5000, debug: bool = False):
     print(f"   - POST /webhook/test   - Test alert parsing")
     print(f"   - GET  /health         - Health check")
     print(f"   - GET  /status         - System status")
+    print(f"   - GET  /queue          - Queue status")
     
     # Pre-initialize order placer
     get_order_placer()
+    
+    # Start the signal queue worker
+    start_queue_worker()
+    print(f"   ✅ Signal queue worker started")
     
     app.run(host=host, port=port, debug=debug, threaded=True)
 

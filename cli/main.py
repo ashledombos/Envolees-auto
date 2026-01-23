@@ -920,7 +920,7 @@ def cleaner():
 
 
 @cleaner.command("start")
-@click.option("--interval", "-i", default=60, type=int, help="Check interval in seconds")
+@click.option("--interval", "-i", default=900, type=int, help="Check interval in seconds (default: 900 = 15min)")
 def cleaner_start(interval):
     """Start the order cleaner daemon"""
     import time
@@ -931,8 +931,9 @@ def cleaner_start(interval):
     
     cleaner_service = OrderCleanerSync(cfg)
     
+    interval_display = f"{interval//60}min" if interval >= 60 else f"{interval}s"
     console.print(f"[green]🧹 Order cleaner started[/green]")
-    console.print(f"   Interval: {interval}s | Timeout: {timeout_candles} candles (4H)")
+    console.print(f"   Interval: {interval_display} | Timeout: {timeout_candles} candles (4H)")
     
     try:
         if not cleaner_service.connect():

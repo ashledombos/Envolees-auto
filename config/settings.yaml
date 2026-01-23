@@ -1,0 +1,144 @@
+# =============================================================================
+# Trading Automation - Configuration Principale
+# =============================================================================
+# Les credentials sont dans config/secrets.yaml (séparé)
+# Les instruments sont dans config/instruments.yaml (optionnel)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# PARAMÈTRES GÉNÉRAUX
+# -----------------------------------------------------------------------------
+general:
+  # Risque par trade (% du capital/équité)
+  risk_percent: 0.5
+  
+  # Utiliser l'équité (true) ou la balance (false) pour le calcul de risque
+  use_equity: true
+  
+  # Ratio Risk/Reward par défaut si non fourni dans l'alerte
+  default_rr_ratio: 2.5
+  
+  # Expiration des ordres limites (en nombre de bougies)
+  order_timeout_candles: 4
+  
+  # Timeframe des bougies en minutes (240 = H4)
+  candle_timeframe_minutes: 240
+
+# -----------------------------------------------------------------------------
+# EXÉCUTION DES ORDRES
+# -----------------------------------------------------------------------------
+execution:
+  # Délai aléatoire entre chaque broker (évite détection copy-trading)
+  delay_between_brokers:
+    enabled: true
+    min_ms: 500    # Minimum 500ms
+    max_ms: 3000   # Maximum 3 secondes
+  
+  # Ordre d'exécution des brokers (si non défini, ordre alphabétique)
+  # broker_order:
+  #   - ftmo_ctrader
+  #   - gft_compte1
+
+# -----------------------------------------------------------------------------
+# FILTRES PRÉ-PLACEMENT (Protection des comptes)
+# -----------------------------------------------------------------------------
+filters:
+  # Marge minimum requise (% de marge libre)
+  min_margin_percent: 30
+  
+  # Buffer avant limite de drawdown daily (%)
+  max_daily_drawdown_percent: 4.0
+  
+  # Buffer avant limite de drawdown total (%)
+  max_total_drawdown_percent: 9.0
+  
+  # Nombre maximum de positions ouvertes par compte
+  max_open_positions: 5
+  
+  # Nombre maximum d'ordres pending par compte
+  max_pending_orders: 10
+  
+  # Interdire doublon: pas d'ordre si déjà un pending sur même instrument
+  prevent_duplicate_orders: true
+
+# -----------------------------------------------------------------------------
+# WEBHOOK SERVER
+# -----------------------------------------------------------------------------
+webhook:
+  host: "0.0.0.0"
+  port: 42042
+  
+  # Token secret est dans secrets.yaml
+  # URL: http://server:5000/webhook?token=VOTRE_TOKEN
+  
+  # Liste d'IPs autorisées (vide = toutes acceptées)
+  # TradingView IPs: 52.89.214.238, 34.212.75.30, 54.218.53.128, 52.32.178.7
+  allowed_ips: []
+
+# -----------------------------------------------------------------------------
+# BROKERS / COMPTES
+# -----------------------------------------------------------------------------
+# Les credentials (tokens, passwords) sont dans config/secrets.yaml
+# -----------------------------------------------------------------------------
+brokers:
+  # ---- FTMO (cTrader) ----
+  ftmo_ctrader:
+    enabled: true
+    type: ctrader
+    name: "FTMO Challenge"
+    is_demo: true
+    auto_refresh_token: true
+    account_id: 45667282  # null = auto-détection
+
+  # ---- GFT Compte 1 (TradeLocker) ----
+  gft_compte1:
+    enabled: true
+    type: tradelocker
+    name: "GFT Funded #1"
+    is_demo: true
+    base_url: "https://bsb.tradelocker.com"
+    server: "GFTTL"
+    account_id: 1711519  # null = premier compte
+
+  # ---- GFT Compte 2 (TradeLocker) ----
+#  gft_compte2:
+#    enabled: true
+#    type: tradelocker
+#    name: "GFT Funded #2"
+#    is_demo: true
+#    base_url: "https://bsb.tradelocker.com"
+#    server: "GFTTL"
+#    account_id: 1711520
+
+# -----------------------------------------------------------------------------
+# INSTRUMENTS
+# -----------------------------------------------------------------------------
+# Peuvent être définis ici ou dans config/instruments.yaml (séparé)
+# Si instruments.yaml existe, il est fusionné avec celui-ci
+# -----------------------------------------------------------------------------
+instruments:
+  EURUSD:
+    ftmo_ctrader: "EURUSD"
+    gft_compte1: "EURUSD.X"
+    gft_compte2: "EURUSD.X"
+    pip_size: 0.0001
+    pip_value_per_lot: 10
+
+# -----------------------------------------------------------------------------
+# NOTIFICATIONS (optionnel)
+# -----------------------------------------------------------------------------
+notifications:
+  enabled: false
+  
+  # Quand notifier
+  on_order_placed: true
+  on_order_filled: true
+  on_order_cancelled: true
+  on_order_error: true
+  on_filter_skip: true
+  
+  # Canaux de notification (utilise Apprise)
+  # Docs: https://github.com/caronc/apprise
+  channels: []
+    # - "tgram://BOT_TOKEN/CHAT_ID"
+    # - "discord://webhook_id/webhook_token"

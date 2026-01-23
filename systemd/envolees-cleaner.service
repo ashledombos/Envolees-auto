@@ -8,10 +8,12 @@ Type=simple
 WorkingDirectory=/home/raphael/dev/envolees-auto
 # Délai de 30s pour éviter race condition avec webhook sur les tokens
 ExecStartPre=/bin/sleep 30
-ExecStart=/home/raphael/dev/envolees-auto/venv/bin/python cli/main.py cleaner start --interval 60
+# Intervalle de 15 minutes (900s) - les ordres expirent après 4 bougies H4 (16h)
+ExecStart=/home/raphael/dev/envolees-auto/venv/bin/python cli/main.py cleaner start --interval 900
 Restart=always
 RestartSec=30
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=default.target
+

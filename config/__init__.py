@@ -363,23 +363,50 @@ def get_config() -> AppConfig:
 
 
 def update_broker_tokens(broker_id: str, access_token: str, refresh_token: str = None):
-    """Update broker tokens in config file (used by auto-refresh)"""
+    """Update broker tokens in secrets file (used by auto-refresh)
+    
+    Since cTrader refresh tokens are single-use, we must save the new tokens
+    to secrets.yaml (not settings.yaml) to persist them across restarts.
+    """
     global _config, _config_path
     
     if _config is None or _config_path is None:
         return
     
-    # Reload from file to avoid overwriting other changes
-    data = _load_file(_config_path)
+    # Determine secrets file path
+    secrets_path = _config_path.parent / "secrets.yaml"
     
-    if "brokers" in data and broker_id in data["brokers"]:
-        data["brokers"][broker_id]["access_token"] = access_token
-        if refresh_token:
-            data["brokers"][broker_id]["refresh_token"] = refresh_token
+    if secrets_path.exists():
+        # Save to secrets.yaml (preferred)
+        try:
+            secrets_data = _load_file(secrets_path)
+            
+            # Ensure broker section exists
+            if broker_id not in secrets_data:
+                secrets_data[broker_id] = {}
+            
+            secrets_data[broker_id]["access_token"] = access_token
+            if refresh_token:
+                secrets_data[broker_id]["refresh_token"] = refresh_token
+            
+            _save_file(secrets_path, secrets_data)
+            print(f"[Config] 💾 Tokens saved to secrets.yaml")
+            
+        except Exception as e:
+            print(f"[Config] ⚠️  Could not save to secrets.yaml: {e}")
+            return
+    else:
+        # Fallback: save to settings.yaml (old behavior)
+        data = _load_file(_config_path)
         
-        _save_file(_config_path, data)
-        
-        # Update in-memory config
-        _config.brokers[broker_id]["access_token"] = access_token
-        if refresh_token:
-            _config.brokers[broker_id]["refresh_token"] = refresh_token
+        if "brokers" in data and broker_id in data["brokers"]:
+            data["brokers"][broker_id]["access_token"] = access_token
+            if refresh_token:
+                data["brokers"][broker_id]["refresh_token"] = refresh_token
+            
+            _save_file(_config_path, data)
+    
+    # Update in-memory config
+    _config.brokers[broker_id]["access_token"] = access_token
+    if refresh_token:
+        _config.brokers[broker_id]["refresh_token"] = refresh_token
