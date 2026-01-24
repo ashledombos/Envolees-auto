@@ -90,3 +90,7 @@ logs/
 config/instruments.yaml
 config/settings.yaml
 config/secrets.yaml
+
+# sauvegardes locales à ne jamais versionner
+backup_*/
+backup_20260123/
