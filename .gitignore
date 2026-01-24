@@ -85,3 +85,8 @@ logs/
 *.bak
 *.orig
 *.backup
+
+# fichiers de conf locaux (env)
+config/instruments.yaml
+config/settings.yaml
+config/secrets.yaml
