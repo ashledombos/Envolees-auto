@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/raphael/dev/envolees-auto
-ExecStart=/home/raphael/dev/envolees-auto/venv/bin/python cli/main.py serve --port 42042
+ExecStart=/home/raphael/dev/envolees-auto/.venv/bin/python cli/main.py serve --port 42042
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
